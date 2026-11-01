@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>照片与视频管理器</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <!-- 左侧导航 -->
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo">◧</div>
+      <div class="brand-text"><b>照片管理</b><small>本地 · 离线 · 非破坏</small></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="library" class="on"><i>▤</i><span>媒体库</span></button>
+      <button data-view="timeline"><i>☰</i><span>时间线</span></button>
+      <button data-view="review"><i>◷</i><span>待整理</span><em id="badge-review" hidden></em></button>
+      <button data-view="dupes"><i>⧉</i><span>重复文件</span><em id="badge-dup" hidden></em></button>
+      <button data-view="similar"><i>≈</i><span>相似照片</span></button>
+      <button data-view="watermark"><i>✦</i><span>时间水印</span></button>
+      <button data-view="edit"><i>⟳</i><span>图像编辑</span></button>
+      <button data-view="jobs"><i>≡</i><span>任务中心</span><em id="badge-jobs" hidden></em></button>
+      <button data-view="sources"><i>⛁</i><span>媒体源</span></button>
+      <button data-view="settings"><i>⚙</i><span>设置</span></button>
+    </nav>
+    <div class="rail-stats" id="rail-stats"></div>
+    <div class="rail-foot">
+      <div class="disk" id="disk-info">—</div>
+      <div class="ver" id="ver"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- 顶部工具条 -->
+    <header class="topbar">
+      <div class="search">
+        <span class="ico">⌕</span>
+        <input id="q" type="search" placeholder="搜索文件名、路径、相机…" autocomplete="off">
+      </div>
+      <div class="filters">
+        <select id="f-type" title="媒体类型">
+          <option value="">全部类型</option>
+          <option value="image">照片</option>
+          <option value="video">视频</option>
+        </select>
+        <select id="f-year" title="年份"><option value="">全部年份</option></select>
+        <select id="f-conf" title="日期可信度">
+          <option value="">全部可信度</option>
+          <option value="high">高（EXIF/视频）</option>
+          <option value="medium">中（文件名）</option>
+          <option value="low">低（目录/文件时间）</option>
+          <option value="none">无日期</option>
+        </select>
+        <select id="f-source" title="媒体源"><option value="">全部媒体源</option></select>
+        <select id="f-tag" title="标签"><option value="">全部标签</option></select>
+        <button class="chip" id="f-star" title="只看星标">★ 星标</button>
+        <button class="chip" id="f-fav" title="只看收藏">收藏</button>
+        <button class="chip" id="f-live" title="只看实况照片">实况</button>
+        <button class="chip" id="f-review" title="只看需要确认日期的">待确认</button>
+        <button class="chip" id="f-dup" title="只看有重复副本的">重复</button>
+        <button class="chip" id="f-marked" title="只看已标记的">已标记</button>
+        <button class="chip ghost" id="f-clear">清除筛选</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="tools">
+        <select id="sort" title="排序">
+          <option value="taken">按拍摄时间</option>
+          <option value="name">按文件名</option>
+          <option value="size">按大小</option>
+          <option value="added">按加入时间</option>
+          <option value="trust">待确认优先</option>
+        </select>
+        <button class="icon-btn" id="order" title="切换升/降序">↓</button>
+        <button class="icon-btn" id="viewmode" title="切换网格/列表">▤</button>
+        <button class="btn" id="btn-hash" title="对候选重复文件计算 SHA-256">计算哈希</button>
+        <button class="btn" id="btn-album" title="把当前筛选结果导出成可离线浏览的网页相册">网页相册…</button>
+        <button class="btn" id="btn-slideshow" title="把选中的照片与视频合成一段幻灯片">幻灯片…</button>
+        <button class="btn primary" id="btn-archive">归档整理…</button>
+      </div>
+    </header>
+
+    <!-- 选择操作条 -->
+    <div class="selbar" id="selbar" hidden>
+      <b id="sel-count">已选 0 项</b>
+      <span class="sep"></span>
+      <button class="btn sm" id="sel-all">全选当前筛选结果</button>
+      <button class="btn sm" id="sel-clear">取消选择</button>
+      <button class="btn sm" id="sel-date">修改拍摄日期…</button>
+      <button class="btn sm" id="sel-shift">时间偏移…</button>
+      <button class="btn sm" id="sel-tag">标签…</button>
+      <button class="btn sm" id="sel-star">★ 星标</button>
+      <button class="btn sm" id="sel-mark">标记 / 取消标记</button>
+      <button class="btn sm primary" id="sel-archive">加入归档任务</button>
+    </div>
+
+    <section class="views">
+      <!-- 媒体库 -->
+      <div class="view on" id="view-library">
+        <div class="scroll" id="grid-scroll">
+          <div class="grid-spacer" id="grid-spacer"></div>
+          <div class="grid-layer" id="grid-layer"></div>
+        </div>
+        <div class="empty" id="lib-empty" hidden>
+          <div class="empty-ico">▤</div>
+          <h3>媒体库还是空的</h3>
+          <p>先在「媒体源」里添加一个照片文件夹，然后扫描建立索引。扫描只读取文件信息，不会修改、移动或删除任何原文件。</p>
+          <button class="btn primary" data-goto="sources">添加媒体源</button>
+        </div>
+        <div class="hintbar" id="lib-hint" hidden></div>
+      </div>
+
+      <!-- 时间线 -->
+      <div class="view" id="view-timeline">
+        <div class="vhead">
+          <div>
+            <h2>时间线</h2>
+            <p>按拍摄时间分组浏览，组标题随滚动吸顶。等高不等宽的排版保留原始宽高比；无日期的照片统一归入「未知日期」。</p>
+          </div>
+          <div class="vhead-actions">
+            <div class="seg" id="tl-density">
+              <button data-d="month" class="on">按月</button>
+              <button data-d="day">按日</button>
+              <button data-d="year">按年</button>
+            </div>
+            <button class="btn" id="tl-today" title="只看往年今天的照片">那年今日</button>
+          </div>
+        </div>
+        <div class="scroll" id="tl-scroll">
+          <div id="tl-body"></div>
+          <div class="tl-more"><button class="btn" id="tl-more">加载更多</button></div>
+        </div>
+      </div>
+
+      <!-- 待整理 / 日期确认 -->
+      <div class="view" id="view-review">
+        <div class="vhead">
+          <div>
+            <h2>日期待确认</h2>
+            <p>没有日期或日期来源不够可靠的文件。原始 EXIF 永远保留，人工覆盖只写入本地数据库。</p>
+          </div>
+          <div class="seg" id="review-mode">
+            <button data-mode="all" class="on">全部待确认</button>
+            <button data-mode="unknown">无日期</button>
+            <button data-mode="low">低可信</button>
+            <button data-mode="conflict">时间冲突</button>
+          </div>
+        </div>
+        <div class="vbody" id="review-list"></div>
+        <div class="selbar inline" id="review-bar" hidden>
+          <b id="review-count">已选 0 项</b>
+          <input type="date" id="review-date">
+          <input type="time" id="review-time" step="1" value="00:00:00">
+          <button class="btn sm primary" id="review-apply">批量确认日期</button>
+          <button class="btn sm" id="review-unknown">标记为未知</button>
+        </div>
+      </div>
+
+      <!-- 重复文件 -->
+      <div class="view" id="view-dupes">
+        <div class="vhead">
+          <div>
+            <h2>完全重复文件</h2>
+            <p>结论基于完整内容的 SHA-256，不是文件名或大小猜测。本版本只查看与标记，不会自动删除任何文件。</p>
+          </div>
+          <div class="vhead-actions">
+            <span class="stat" id="dup-stat"></span>
+            <button class="btn" id="btn-hash2">计算缺失哈希</button>
+          </div>
+        </div>
+        <div class="vbody" id="dup-list"></div>
+      </div>
+
+      <!-- 相似照片 -->
+      <div class="view" id="view-similar">
+        <div class="vhead">
+          <div>
+            <h2>相似照片</h2>
+            <p>对缩略图计算 64 位 dHash 后按汉明距离聚类，用于发现连拍、修图前后的版本。仅作候选提示，不会移动或删除任何文件；内容完全相同的文件在「重复文件」页处理。</p>
+          </div>
+          <div class="vhead-actions">
+            <label class="range-label">阈值 <input type="range" id="sim-threshold" min="0" max="16" step="1" value="6"><b id="sim-threshold-val">6</b></label>
+            <button class="btn" id="btn-sim-hash">计算相似指纹</button>
+          </div>
+        </div>
+        <div class="vbody" id="similar-list"></div>
+      </div>
+
+      <!-- 时间水印 -->
+      <div class="view" id="view-watermark">
+        <div class="wm-layout">
+          <aside class="wm-panel" id="wm-panel">
+            <div class="wmbox">
+              <div class="wm-title">预设</div>
+              <div class="wm-row">
+                <select id="wm-preset" style="flex:1"></select>
+                <button class="icon-btn" id="wm-preset-save" title="把当前参数保存为预设">＋</button>
+                <button class="icon-btn" id="wm-preset-del" title="删除当前自定义预设">×</button>
+              </div>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">文字</div>
+              <label class="wmlabel">日期格式
+                <input id="wm-datefmt" list="wm-datefmts" value="%Y-%m-%d" spellcheck="false">
+              </label>
+              <datalist id="wm-datefmts">
+                <option value="%Y-%m-%d">2023-05-01</option>
+                <option value="%Y.%m.%d %H:%M">2023.05.01 14:25</option>
+                <option value="%Y/%m/%d">2023/05/01</option>
+                <option value="%Y年%m月%d日">2023年05月01日</option>
+                <option value="%b %d, %Y">May 01, 2023</option>
+                <option value="%Y-%m-%d %H:%M:%S">2023-05-01 14:25:30</option>
+              </datalist>
+              <label class="wmlabel">文字模板
+                <input id="wm-text" value="{date}" spellcheck="false">
+              </label>
+              <div class="wm-hint">可用占位符：{date} {time} {filename} {camera}</div>
+              <label class="wmlabel">第二行
+                <input id="wm-custom" placeholder="地点或自定义文字（可留空）">
+              </label>
+              <label class="wm-check"><input type="checkbox" id="wm-source"> 末尾标注时间来源</label>
+              <label class="wm-check"><input type="checkbox" id="wm-requiredate" checked> 没有可靠时间时跳过</label>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">字体与自适应</div>
+              <select id="wm-font" style="width:100%"></select>
+              <label class="wm-check" style="margin-top:8px"><input type="checkbox" id="wm-bold" checked> 粗体</label>
+              <div class="wm-row" style="margin-top:8px">
+                <input type="text" id="wm-font-path" placeholder="自定义字体文件（.ttf/.ttc/.otf）" style="flex:1">
+                <button class="btn sm" id="wm-font-validate">校验</button>
+              </div>
+              <div class="wm-hint" id="wm-font-hint">
+                也可以把字体文件放进数据目录的 <code>fonts\</code> 文件夹，或直接填完整路径。<br>
+                <span style="color:#98a1b3">注意：使用第三方字体前请自行确认其授权许可允许商用与再分发。</span>
+              </div>
+              <label class="wmlabel">字号
+                <input type="range" id="wm-size" min="0.8" max="12" step="0.1" value="2.8">
+                <b id="wm-size-v">2.8%</b>
+              </label>
+              <div class="wm-hint">按图片短边百分比计算，保证横竖图视觉一致。</div>
+              <div class="wm-row">
+                <label class="wmlabel sm">最小 px <input type="number" id="wm-min" value="12" min="6" max="400"></label>
+                <label class="wmlabel sm">最大 px <input type="number" id="wm-max" value="200" min="12" max="800"></label>
+                <label class="wmlabel sm">宽度上限% <input type="number" id="wm-maxw" value="40" min="5" max="100"></label>
+              </div>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">位置</div>
+              <div class="wm-posgrid" id="wm-pos">
+                <button data-pos="tl" title="左上">↖</button>
+                <button data-pos="tc" title="上中">↑</button>
+                <button data-pos="tr" title="右上">↗</button>
+                <button data-pos="ml" title="左中">←</button>
+                <button data-pos="mc" title="居中">·</button>
+                <button data-pos="mr" title="右中">→</button>
+                <button data-pos="bl" title="左下">↙</button>
+                <button data-pos="bc" title="下中" class="on">↓</button>
+                <button data-pos="br" title="右下">↘</button>
+                <button data-pos="free" title="自由定位：在预览图上直接拖动水印">✥ 拖动</button>
+              </div>
+              <div class="wm-hint" id="wm-free-hint" hidden>
+                自由定位已开启：在右侧预览图上按住水印拖动即可。位置按画面百分比记录，批量应用到不同尺寸照片时保持一致。
+              </div>
+              <label class="wmlabel">边距
+                <input type="range" id="wm-margin" min="0" max="15" step="0.5" value="3">
+                <b id="wm-margin-v">3%</b>
+              </label>
+              <label class="wmlabel">旋转
+                <input type="range" id="wm-rotate" min="-90" max="90" step="1" value="0">
+                <b id="wm-rotate-v">0°</b>
+              </label>
+              <label class="wmlabel">画面方向
+                <select id="wm-rotimg">
+                  <option value="0">自动（按 EXIF）</option>
+                  <option value="90">顺时针 90°</option>
+                  <option value="180">旋转 180°</option>
+                  <option value="270">逆时针 90°</option>
+                </select>
+              </label>
+              <div class="wm-hint">竖拍照片如果方向不对（EXIF 缺失或写错），用「画面方向」把画面转正后再定位水印。</div>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">视频</div>
+              <label class="wm-check"><input type="checkbox" id="wm-video" checked> 视频也烧水印（需要 FFmpeg）</label>
+              <div class="wm-hint" id="wm-ffmpeg">正在检测 FFmpeg…</div>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">颜色与效果</div>
+              <div class="wm-row">
+                <label class="wmlabel sm">文字色 <input type="color" id="wm-color" value="#FF8A1E"></label>
+                <label class="wmlabel sm">描边色 <input type="color" id="wm-stroke-color" value="#000000"></label>
+              </div>
+              <label class="wmlabel">不透明度
+                <input type="range" id="wm-opacity" min="0.2" max="1" step="0.05" value="1">
+                <b id="wm-opacity-v">100%</b>
+              </label>
+              <label class="wmlabel">描边宽度
+                <input type="range" id="wm-stroke" min="0" max="0.2" step="0.005" value="0.05">
+                <b id="wm-stroke-v">5%</b>
+              </label>
+              <label class="wmlabel">阴影
+                <input type="range" id="wm-shadow" min="0" max="0.3" step="0.01" value="0.10">
+                <b id="wm-shadow-v">10%</b>
+              </label>
+              <label class="wm-check"><input type="checkbox" id="wm-plate"> 半透明底板</label>
+              <label class="wm-check" id="wm-plate-full-row" hidden><input type="checkbox" id="wm-plate-full"> 底板通栏（相框底栏）</label>
+              <label class="wmlabel" id="wm-plate-row" hidden>底板不透明度
+                <input type="range" id="wm-plate-opacity" min="0.1" max="1" step="0.05" value="0.42">
+                <b id="wm-plate-v">42%</b>
+              </label>
+            </div>
+          </aside>
+
+          <section class="wm-stage">
+            <div class="wm-stage-head">
+              <div class="wm-samples" id="wm-samples"></div>
+              <button class="btn sm" id="wm-resample">换一组样本</button>
+            </div>
+            <div class="wm-previews" id="wm-previews"></div>
+            <div class="wm-runbar">
+              <div class="wm-runline">
+                <label class="wmlabel" style="flex:1">输出目录
+                  <div style="display:flex;gap:8px;margin-top:4px">
+                    <input type="text" id="wm-out" placeholder="例如 D:\水印输出">
+                    <button class="btn" id="wm-pick">浏览…</button>
+                  </div>
+                </label>
+              </div>
+              <div class="wm-runline">
+                <label class="wmlabel sm">命名模板 <input type="text" id="wm-name" value="{name}_wm.{ext}"></label>
+                <label class="wmlabel sm">输出格式
+                  <select id="wm-format">
+                    <option value="same">保持原格式</option>
+                    <option value="jpg">JPEG</option>
+                    <option value="png">PNG</option>
+                    <option value="webp">WebP</option>
+                  </select>
+                </label>
+                <label class="wmlabel sm">JPEG 质量 <input type="number" id="wm-quality" min="50" max="100" value="92"></label>
+              </div>
+              <div class="wm-runline">
+                <label class="wmlabel sm" style="max-width:230px">输出方式
+                  <select id="wm-mode">
+                    <option value="copy">新建副本（原图不动）</option>
+                    <option value="overwrite">覆盖原图（会改写原文件）</option>
+                  </select>
+                </label>
+                <label class="wm-check" id="wm-backup-row" hidden><input type="checkbox" id="wm-backup" checked> 覆盖前先备份原件</label>
+                <button class="btn sm" id="wm-backups" title="查看并还原覆盖前的原件备份">覆盖记录</button>
+                <span class="wm-warn" id="wm-warn" hidden>注意：覆盖模式会直接改写原文件，建议先用 1 张试手。</span>
+              </div>
+              <div class="wm-runline">
+                <label class="wm-check" title="取消勾选会移除 EXIF/GPS；HEIC 转 JPEG 时同样生效"><input type="checkbox" id="wm-exif" checked> 保留 EXIF</label>
+                <label class="wm-check" title="不勾选时同名文件自动加序号，不会覆盖"><input type="checkbox" id="wm-skip" checked> 跳过已存在文件</label>
+                <span class="wm-scope" id="wm-scope"></span>
+                <button class="btn primary" id="wm-run">开始生成水印</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- 图像编辑：旋转 / 裁剪 / 调色 / 打码 -->
+      <div class="view" id="view-edit">
+        <div class="wm-layout">
+          <aside class="wm-panel" id="edit-panel">
+            <div class="wmbox">
+              <div class="wm-title">编辑方式</div>
+              <div class="seg" id="edit-tabs" style="width:100%">
+                <button data-tab="rotate" class="on" style="flex:1;padding:5px 4px">旋转</button>
+                <button data-tab="crop" style="flex:1;padding:5px 4px">裁剪</button>
+                <button data-tab="tone" style="flex:1;padding:5px 4px">调色</button>
+                <button data-tab="mask" style="flex:1;padding:5px 4px">打码</button>
+              </div>
+            </div>
+
+            <div class="wmbox" id="edit-pane-rotate">
+              <div class="wm-title">批量操作</div>
+              <div class="edit-ops" id="edit-ops">
+                <button class="edit-op" data-op="rot90" title="顺时针旋转 90°">
+                  <span class="ico">↻</span><span class="lb">右转 90°</span></button>
+                <button class="edit-op" data-op="rot270" title="逆时针旋转 90°">
+                  <span class="ico">↺</span><span class="lb">左转 90°</span></button>
+                <button class="edit-op" data-op="rot180" title="旋转 180°">
+                  <span class="ico">⇅</span><span class="lb">转 180°</span></button>
+                <button class="edit-op" data-op="fliph" title="左右镜像">
+                  <span class="ico">⇋</span><span class="lb">左右翻转</span></button>
+                <button class="edit-op" data-op="flipv" title="上下镜像">
+                  <span class="ico">⇵</span><span class="lb">上下翻转</span></button>
+              </div>
+              <div class="wm-hint">点一个操作就会立刻执行。可以配合媒体库里的多选使用。</div>
+            </div>
+
+            <div class="wmbox" id="edit-pane-crop" hidden>
+              <div class="wm-title">裁剪方式</div>
+              <div class="seg" id="edit-crop-mode" style="width:100%">
+                <button data-crop="aspect" class="on" style="flex:1">按比例</button>
+                <button data-crop="region" style="flex:1">按区域</button>
+              </div>
+              <div id="edit-crop-aspect">
+                <label class="wmlabel sm">目标比例
+                  <select id="edit-aspect">
+                    <option value="1">1:1（正方形）</option>
+                    <option value="1.3333333">4:3</option>
+                    <option value="0.75">3:4</option>
+                    <option value="1.7777778">16:9</option>
+                    <option value="0.5625">9:16</option>
+                    <option value="1.5">3:2</option>
+                    <option value="0.6666667">2:3</option>
+                  </select>
+                </label>
+                <div class="wm-title" style="margin-top:10px">保留位置</div>
+                <div class="wm-posgrid" id="edit-crop-align">
+                  <button data-h="left" data-v="top">↖</button>
+                  <button data-h="center" data-v="top">↑</button>
+                  <button data-h="right" data-v="top">↗</button>
+                  <button data-h="left" data-v="center">←</button>
+                  <button data-h="center" data-v="center" class="on">·</button>
+                  <button data-h="right" data-v="center">→</button>
+                  <button data-h="left" data-v="bottom">↙</button>
+                  <button data-h="center" data-v="bottom">↓</button>
+                  <button data-h="right" data-v="bottom">↘</button>
+                </div>
+                <div class="wm-hint">按比例裁剪时，每张照片都会按这个比例裁，位置跟随上面的九宫格。
+                  适合统一成竖版/方版发朋友圈。</div>
+              </div>
+              <div id="edit-crop-region" hidden>
+                <div class="wm-hint" style="margin-top:0">在右侧预览图上按住拖动，画出要保留的区域。
+                  区域按百分比记录，套用到不同尺寸的照片上位置一致。</div>
+                <div class="wm-runline" style="margin-top:8px">
+                  <span class="wmlabel sm" style="flex:1">框选区域 <b id="edit-crop-rect" style="min-width:0;text-align:left">—</b></span>
+                  <button class="btn sm" id="edit-crop-reset">重置为整张</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="wmbox" id="edit-pane-tone" hidden>
+              <div class="wm-title">调色预设</div>
+              <div class="edit-ops" id="edit-tone-presets"></div>
+              <div class="wm-title" style="margin-top:12px">手动微调</div>
+              <label class="wmlabel sm">亮度 <input type="range" id="edit-t-bright" min="-100" max="100" value="0"><b id="edit-t-bright-v">0</b></label>
+              <label class="wmlabel sm">对比度 <input type="range" id="edit-t-contrast" min="-100" max="100" value="0"><b id="edit-t-contrast-v">0</b></label>
+              <label class="wmlabel sm">饱和度 <input type="range" id="edit-t-sat" min="-100" max="100" value="0"><b id="edit-t-sat-v">0</b></label>
+              <label class="wmlabel sm">色温 <input type="range" id="edit-t-warm" min="-100" max="100" value="0"><b id="edit-t-warm-v">0</b></label>
+              <div class="wm-hint">拖动滑块会切到「自定义」；选预设则用预设的参数。</div>
+            </div>
+
+            <div class="wmbox" id="edit-pane-mask" hidden>
+              <div class="wm-title">打码方式</div>
+              <div class="seg" id="edit-mask-mode" style="width:100%">
+                <button data-mask="mosaic" class="on" style="flex:1">马赛克</button>
+                <button data-mask="blur" style="flex:1">模糊</button>
+              </div>
+              <label class="wmlabel sm">强度 <input type="range" id="edit-mask-strength" min="4" max="80" value="16"><b id="edit-mask-strength-v">16</b></label>
+              <div class="wm-hint">在右侧预览图上按住拖动，框出要打码的区域。
+                区域按百分比记录，批量处理时位置保持一致。</div>
+              <div class="wm-runline" style="margin-top:8px">
+                <span class="wmlabel sm" style="flex:1">框选区域 <b id="edit-mask-rect" style="min-width:0;text-align:left">—</b></span>
+                <button class="btn sm" id="edit-mask-reset">重置</button>
+              </div>
+            </div>
+
+            <div class="wmbox">
+              <div class="wm-title">输出方式</div>
+              <div class="wm-runline">
+                <label class="wmlabel sm" style="max-width:230px">方式
+                  <select id="edit-mode">
+                    <option value="copy">新建副本（原图不动）</option>
+                    <option value="overwrite">覆盖原图（会改写原文件）</option>
+                  </select>
+                </label>
+                <label class="wm-check" id="edit-backup-row" hidden><input type="checkbox" id="edit-backup" checked> 覆盖前先备份原件</label>
+                <button class="btn sm" id="edit-backups" title="查看并还原覆盖前的原件备份">覆盖记录</button>
+              </div>
+              <div class="wm-runline" id="edit-out-row">
+                <label class="wmlabel" style="flex:1">输出目录
+                  <div style="display:flex;gap:8px;margin-top:4px">
+                    <input type="text" id="edit-out" placeholder="例如 D:\旋转输出">
+                    <button class="btn" id="edit-pick">浏览…</button>
+                  </div>
+                </label>
+              </div>
+              <div class="wm-runline">
+                <label class="wmlabel sm">命名模板 <input type="text" id="edit-name" value="{name}.{ext}"></label>
+                <label class="wm-check" title="取消勾选会移除 EXIF/GPS"><input type="checkbox" id="edit-exif" checked> 保留 EXIF</label>
+              </div>
+              <div class="wm-runline">
+                <span class="wm-warn" id="edit-warn" hidden>注意：覆盖模式会直接改写原文件，建议先用 1 张试手。</span>
+                <span class="wm-scope" id="edit-scope"></span>
+              </div>
+              <button class="btn primary" id="edit-run" style="width:100%;margin-top:10px">应用到所选照片</button>
+            </div>
+          </aside>
+          <section class="wm-stage">
+            <div class="wm-stage-head">
+              <div class="wm-samples" id="edit-help">
+                <b style="color:#cddcff">怎么用</b>：
+                1) 在「媒体库」里勾选要处理的照片（没勾选则处理当前筛选结果）；
+                2) 回到这一页，选择编辑方式（旋转/裁剪/调色/打码）；
+                3) 右侧会实时预览效果，确认后点「应用到所选照片」。
+              </div>
+            </div>
+            <div class="wm-previews" id="edit-preview-area">
+              <div class="wm-empty">
+                这里不需要预览。<br>
+                批量旋转与翻转不会改动拍摄时间、EXIF 里的其他信息（除了方向标记会归正）。<br>
+                视频会被跳过；HEIC 不支持原地编辑（没有 HEVC 编码器），会明确报错。
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- 任务中心 -->
+      <div class="view" id="view-jobs">
+        <div class="vhead">
+          <div>
+            <h2>任务中心</h2>
+            <p>扫描、哈希、复制、移动都在后台执行。任务状态持久化，重启后可继续或重试；已执行的批次可在这里撤销。</p>
+          </div>
+          <div class="seg" id="jobs-tab">
+            <button data-tab="jobs" class="on">任务</button>
+            <button data-tab="logs">操作日志</button>
+            <button data-tab="undo">可撤销</button>
+          </div>
+        </div>
+        <div class="vbody" id="jobs-list"></div>
+      </div>
+
+      <!-- 媒体源 -->
+      <div class="view" id="view-sources">
+        <div class="vhead">
+          <div>
+            <h2>媒体源</h2>
+            <p>支持本机磁盘、外接硬盘、网络映射盘。移除源只删除索引，不删除原文件。</p>
+          </div>
+          <div class="vhead-actions">
+            <button class="btn" id="btn-scan-all">扫描全部在线源</button>
+            <button class="btn primary" id="btn-add-source">添加文件夹…</button>
+          </div>
+        </div>
+        <div class="vbody" id="src-list"></div>
+      </div>
+
+      <!-- 设置 -->
+      <div class="view" id="view-settings">
+        <div class="vhead"><div><h2>设置</h2><p>归档默认值、数据备份与清单导出。所有数据仅保存在本机。</p></div></div>
+        <div class="vbody settings" id="settings-body"></div>
+      </div>
+    </section>
+
+    <footer class="statusbar">
+      <div class="status-left" id="status-text">就绪</div>
+      <div class="status-right">
+        <span id="status-count"></span>
+        <span class="dot"></span>
+        <span id="status-job"></span>
+      </div>
+    </footer>
+  </main>
+
+  <!-- 详情抽屉 -->
+  <aside class="detail" id="detail" hidden>
+    <div class="detail-head">
+      <div class="detail-title" id="d-title">详情</div>
+      <div class="detail-tools">
+        <button class="icon-btn" id="d-rotate" title="旋转预览（不修改原图）">↻</button>
+        <button class="icon-btn" id="d-close" title="关闭">×</button>
+      </div>
+    </div>
+    <div class="detail-body" id="d-body"></div>
+  </aside>
+</div>
+
+<div class="modal-root" id="modal-root" hidden></div>
+<div class="toasts" id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>

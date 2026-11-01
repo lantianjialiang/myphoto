@@ -1,0 +1,29 @@
+[package]
+name = "photo-video-manager"
+version = "1.6.1"
+edition = "2021"
+rust-version = "1.88"
+description = "本地照片与视频整理工具（离线、非破坏性）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1.11", features = ["v4"] }
+sha2 = "0.10"
+walkdir = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+kamadak-exif = "0.5"
+chrono = "0.4"
+tiny_http = "0.12"
+base64 = "0.22"
+ab_glyph = "0.2.32"
+zip = { version = "9.2.0", default-features = false, features = ["deflate"] }
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hmac = "0.12"
+getrandom = "0.2"
+
+[profile.release]
+opt-level = 2
+codegen-units = 4
