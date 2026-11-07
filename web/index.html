@@ -57,6 +57,7 @@
         </select>
         <select id="f-source" title="媒体源"><option value="">全部媒体源</option></select>
         <select id="f-tag" title="标签"><option value="">全部标签</option></select>
+        <select id="f-watermark" title="水印状态"><option value="">全部水印状态</option><option value="0">未标记水印</option><option value="1">已有水印</option></select>
         <button class="chip" id="f-star" title="只看星标">★ 星标</button>
         <button class="chip" id="f-fav" title="只看收藏">收藏</button>
         <button class="chip" id="f-live" title="只看实况照片">实况</button>
@@ -95,6 +96,7 @@
       <button class="btn sm" id="sel-star">★ 星标</button>
       <button class="btn sm" id="sel-mark">标记 / 取消标记</button>
       <button class="btn sm primary" id="sel-archive">加入归档任务</button>
+      <button class="btn sm primary" id="sel-watermark">给所选照片加水印</button><button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
     </div>
 
     <section class="views">
@@ -273,6 +275,7 @@
               </label>
               <label class="wmlabel">旋转
                 <input type="range" id="wm-rotate" min="-90" max="90" step="1" value="0">
+<button class="btn sm" type="button" id="wm-horizontal">恢复文字水平（0°）</button>
                 <b id="wm-rotate-v">0°</b>
               </label>
               <label class="wmlabel">画面方向
@@ -283,7 +286,7 @@
                   <option value="270">逆时针 90°</option>
                 </select>
               </label>
-              <div class="wm-hint">竖拍照片如果方向不对（EXIF 缺失或写错），用「画面方向」把画面转正后再定位水印。</div>
+              <div class="wm-hint">先按 EXIF 转正再沿底边加字。整批方向保留自动；异常单张可在右侧样片中校正。</div>
             </div>
 
             <div class="wmbox">
@@ -326,6 +329,7 @@
             </div>
             <div class="wm-previews" id="wm-previews"></div>
             <div class="wm-runbar">
+<label class="wmlabel">处理范围 <select id="wm-scope-mode"><option value="selected">优先使用媒体库所选照片</option><option value="filtered">当前筛选结果全部</option></select></label><label class="wm-check"><input type="checkbox" id="wm-known-skip" checked> 跳过已有水印的照片</label><div class="wm-hint">本软件生成的水印自动记录；其他软件或手机已有的水印，请先在媒体库选中并标记。取消勾选可强制重加。</div>
               <div class="wm-runline">
                 <label class="wmlabel" style="flex:1">输出目录
                   <div style="display:flex;gap:8px;margin-top:4px">
@@ -362,6 +366,7 @@
                 <label class="wm-check" title="不勾选时同名文件自动加序号，不会覆盖"><input type="checkbox" id="wm-skip" checked> 跳过已存在文件</label>
                 <span class="wm-scope" id="wm-scope"></span>
                 <button class="btn primary" id="wm-run">开始生成水印</button>
+<button class="btn" id="wm-library">返回媒体库选照片</button>
               </div>
             </div>
           </section>

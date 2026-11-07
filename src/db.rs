@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 pub type R<T> = Result<T, String>;
 
@@ -203,6 +203,16 @@ CREATE TABLE IF NOT EXISTS processing_outputs (
   kind TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_processing_job ON processing_outputs(job_id);
+CREATE TABLE IF NOT EXISTS watermark_marks (
+ file_id TEXT PRIMARY KEY REFERENCES media_files(id) ON DELETE CASCADE,
+ content_hash TEXT NOT NULL, size_bytes INTEGER NOT NULL, mtime_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watermark_hash ON watermark_marks(content_hash);
+CREATE TABLE IF NOT EXISTS watermark_hashes (content_hash TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS watermark_rotation (
+ asset_id TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
+ degrees INTEGER NOT NULL DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,

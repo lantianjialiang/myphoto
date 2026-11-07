@@ -290,6 +290,7 @@ pub fn run(
             }
         };
         let src = PathBuf::from(&file.absolute_path);
+        let had_watermark = crate::watermark::has_watermark(&conn,&src)?;
         let src_ext = file.ext.to_lowercase();
         if crate::util::media_kind(&src_ext) == Some("video") {
             job.skip();
@@ -381,6 +382,7 @@ pub fn run(
                     }
                     drop_previews(&conn, &file.asset_id);
                     crate::scan::refresh_modified(&conn, &src)?;
+                    if had_watermark { crate::watermark::mark_path(&conn,&src,true)?; }
                     record_backup(
                         &conn,
                         &job.id,
@@ -401,6 +403,7 @@ pub fn run(
                     );
                 } else {
                     crate::scan::register_output(&conn, id, &job.id, "edit", &target)?;
+                    if had_watermark { crate::watermark::mark_path(&conn,&target,true)?; }
                     crate::db::log_op(
                         &conn,
                         "edit",

@@ -158,6 +158,7 @@ fn filter_from(map: &std::collections::HashMap<String, String>) -> query::Filter
         live: qb(map, "live").filter(|v| *v),
         tag: qs(map, "tag"),
         job_id: qs(map, "job_id"),
+        watermarked: map.get("watermarked").map(|v|v=="1" || v=="true"),
     }
 }
 
@@ -354,6 +355,8 @@ fn route(
         ["api", "edit", "backups", "drop"] if m == "POST" => Some(api_edit_drop(app, req)),
         ["api", "watermark", "preview"] if m == "POST" => Some(api_wm_preview(app, req)),
         ["api", "watermark", "run"] if m == "POST" => Some(api_wm_run(app, req)),
+        ["api", "watermark", "mark"] if m == "POST" => Some(api_wm_mark(app,req)),
+        ["api", "watermark", "rotation"] if m == "POST" => Some(api_wm_rotation(app,req)),
         ["api", "album", "run"] if m == "POST" => Some(api_album_run(app, req)),
         ["api", "image", id] if m == "GET" => Some(api_image(app, id)),
         ["api", "album", "themes"] => Some(ok(album::theme_list())),
@@ -1991,6 +1994,28 @@ fn api_edit_drop(app: &Shared, req: &mut Request) -> Response<Body> {
     match crate::edit::drop_batch(&app.paths.db_path, &job_id) {
         Ok(v) => ok(v),
         Err(e) => json_err(400, &e),
+    }
+}
+
+fn api_wm_mark(app: &Shared, req: &mut Request) -> Response<Body> {
+    let Some(body)=read_body(req) else { return json_err(400,"请求格式错误") };
+    let Ok(conn)=open_db(app) else { return json_err(500,"数据库不可用") };
+    let marked=body.get("marked").and_then(Value::as_bool).unwrap_or(true);
+    let ids=match ids_from_body(&conn,&body) {Ok(v)=>v,Err(e)=>return json_err(400,&e)};
+    for id in &ids {
+        let file=match assets::primary_file(&conn,id) {Ok(Some(f))=>f,_=>return json_err(400,"照片文件不可用")};
+        if let Err(e)=watermark::mark_path(&conn,Path::new(&file.absolute_path),marked) {return json_err(400,&e)}
+    }
+    ok(json!({"updated":ids.len()}))
+}
+
+fn api_wm_rotation(app: &Shared, req: &mut Request) -> Response<Body> {
+    let Some(body)=read_body(req) else { return json_err(400,"请求格式错误") };
+    let id=body.get("id").and_then(Value::as_str).unwrap_or("");
+    let Some(degrees)=body.get("degrees").and_then(Value::as_i64).filter(|v|[0,90,180,270].contains(v)) else { return json_err(400,"方向必须为 0、90、180 或 270") };
+    let Ok(conn)=open_db(app) else { return json_err(500,"数据库不可用") };
+    match conn.execute("INSERT OR REPLACE INTO watermark_rotation(asset_id,degrees) VALUES(?1,?2)",params![id,degrees]) {
+        Ok(_)=>ok(json!(true)),Err(e)=>json_err(400,&e.to_string())
     }
 }
 

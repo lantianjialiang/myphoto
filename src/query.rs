@@ -3,6 +3,7 @@
 use crate::db::R;
 use rusqlite::Connection;
 use serde::Deserialize;
+const WATERMARKED: &str = "EXISTS(SELECT 1 FROM watermark_marks wm WHERE wm.file_id=pf.id AND wm.size_bytes=pf.size_bytes AND wm.mtime_ms=pf.mtime_ms) OR EXISTS(SELECT 1 FROM processing_outputs po WHERE po.output_file_id=pf.id AND po.kind='watermark') OR EXISTS(SELECT 1 FROM watermark_hashes wh WHERE wh.content_hash=pf.sha256)";
 
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct Filter {
@@ -25,12 +26,16 @@ pub struct Filter {
     pub live: Option<bool>,
     pub tag: Option<String>,
     pub job_id: Option<String>,
+    pub watermarked: Option<bool>,
 }
 
 impl Filter {
     pub fn where_clause(&self) -> (String, Vec<String>) {
         let mut parts: Vec<String> = Vec::new();
         let mut args: Vec<String> = Vec::new();
+        if let Some(marked)=self.watermarked {
+            parts.push(format!("{}({WATERMARKED})",if marked {""} else {"NOT "}));
+        }
         if let Some(id) = &self.job_id {
             args.push(id.clone());
             parts.push(format!("EXISTS(SELECT 1 FROM processing_outputs po JOIN media_files ofile ON ofile.id=po.output_file_id WHERE ofile.asset_id=a.id AND po.job_id=?{})",args.len()));
@@ -187,7 +192,8 @@ pub fn list(
                        FROM media_files x WHERE x.asset_id=a.id ORDER BY x.rowid LIMIT 1)) AS decode_error,
                 a.star, a.favorite, a.live_pair_id,
                 (SELECT group_concat(t.name, '|') FROM asset_tags at JOIN tags t ON t.tag_id=at.tag_id
-                 WHERE at.asset_id=a.id) AS tag_names
+                 WHERE at.asset_id=a.id) AS tag_names,
+                ({WATERMARKED}) AS watermarked
          {FROM}{w}{} LIMIT ?{} OFFSET ?{}",
         order_clause(sort, order),
         args.len() + 1,
@@ -229,6 +235,7 @@ pub fn list(
                 "star": r.get::<_, Option<i64>>(23)?.unwrap_or(0) != 0,
                 "favorite": r.get::<_, Option<i64>>(24)?.unwrap_or(0) != 0,
                 "live": r.get::<_, Option<String>>(25)?.is_some(),
+                "watermarked": r.get::<_, bool>(27)?,
                 "tags": r.get::<_, Option<String>>(26)?
                     .map(|s| s.split('|').filter(|t| !t.is_empty()).map(|t| t.to_string()).collect::<Vec<_>>())
                     .unwrap_or_default(),

@@ -74,6 +74,7 @@ pub struct Config {
     pub output_format: String,
     /// 视频也烧水印（需要 ffmpeg.exe；没有就跳过视频）
     pub video: bool,
+    pub skip_watermarked: bool,
 }
 
 impl Default for Config {
@@ -111,6 +112,7 @@ impl Default for Config {
             require_date: true,
             output_format: "same".into(),
             video: true,
+            skip_watermarked: true,
         }
     }
 }
@@ -142,6 +144,31 @@ impl Config {
 }
 
 // ---------------- 字体 ----------------
+pub fn has_watermark(conn: &rusqlite::Connection, path: &Path) -> Result<bool,String> {
+    let (hash,_) = util::sha256_file(path).map_err(|e|e.to_string())?;
+    let marked: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM watermark_hashes WHERE content_hash=?1)",rusqlite::params![hash],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if marked { return Ok(true); }
+    // Compatibility with copies generated before watermark tracking was introduced.
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM processing_outputs po JOIN media_files f ON f.id=po.output_file_id WHERE po.kind='watermark' AND f.absolute_path=?1 COLLATE NOCASE)",rusqlite::params![path.to_string_lossy()],|r|r.get(0)).map_err(|e|e.to_string())
+}
+
+pub fn mark_path(conn: &rusqlite::Connection, path: &Path, marked: bool) -> Result<(),String> {
+    let (hash,_) = util::sha256_file(path).map_err(|e|e.to_string())?;
+    if !marked {
+        conn.execute("DELETE FROM watermark_marks WHERE content_hash=?1",rusqlite::params![hash]).map_err(|e|e.to_string())?;
+        conn.execute("DELETE FROM watermark_hashes WHERE content_hash=?1",rusqlite::params![hash]).map_err(|e|e.to_string())?;
+        conn.execute("UPDATE processing_outputs SET kind='watermark-cleared' WHERE kind='watermark' AND output_file_id IN (SELECT id FROM media_files WHERE absolute_path=?1 COLLATE NOCASE)",rusqlite::params![path.to_string_lossy()]).map_err(|e|e.to_string())?;
+        return Ok(());
+    }
+    conn.execute("INSERT OR IGNORE INTO watermark_hashes(content_hash) VALUES(?1)",rusqlite::params![hash]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT OR REPLACE INTO watermark_marks(file_id,content_hash,size_bytes,mtime_ms) SELECT id,?1,size_bytes,mtime_ms FROM media_files WHERE absolute_path=?2 COLLATE NOCASE",rusqlite::params![hash,path.to_string_lossy()]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+fn asset_config(conn: &rusqlite::Connection, id: &str, cfg: &Config) -> Config {
+    let correction: i32=conn.query_row("SELECT degrees FROM watermark_rotation WHERE asset_id=?1",rusqlite::params![id],|r|r.get(0)).unwrap_or(0);
+    let mut result=cfg.clone();result.rotate_image=(result.rotate_image+correction).rem_euclid(360);result.clean()
+}
 
 /// 系统里常见字体。ttc 用第 0 个字形集（Windows 的中文字体都是这样排的）。
 const FONT_CANDIDATES: &[(&str, &str, &str)] = &[
@@ -753,14 +780,16 @@ pub fn rotate_image_by(img: RgbaImage, deg: i32) -> RgbaImage {
 
 /// 在已按方向校正的图像上绘制水印。
 pub fn render_for_asset(conn: &rusqlite::Connection, id: &str, src: &Path, img: RgbaImage, cfg: &Config) -> Result<RgbaImage, String> {
+    let cfg=asset_config(conn,id,cfg);
+    if cfg.skip_watermarked && has_watermark(conn,src)? { return Ok(img); }
     let (taken, source, camera): (Option<String>,Option<String>,Option<String>) = conn.query_row(
         "SELECT effective_taken_at,date_source,camera FROM media_assets WHERE id=?1", rusqlite::params![id],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
     if cfg.require_date && cfg.text.contains("{date}") && taken.is_none() {
         return Err("没有拍摄日期，无法添加日期水印；请先指定日期或关闭水印页的日期要求".into());
     }
-    let text = build_text(cfg,taken.as_deref(),source.as_deref(),&crate::util::file_name_of(src),camera.as_deref());
-    let rendered = render(rotate_image_by(img,cfg.rotate_image),cfg,&text);
+    let text = build_text(&cfg,taken.as_deref(),source.as_deref(),&crate::util::file_name_of(src),camera.as_deref());
+    let rendered = render(rotate_image_by(img,cfg.rotate_image),&cfg,&text);
     if rendered.font_px <= 0.0 { return Err("没有可绘制的水印文字，请检查文字与字体设置".into()); }
     Ok(rendered.img)
 }
@@ -1021,7 +1050,7 @@ fn splice_exif(mut jpeg: Vec<u8>, src: &Path, keep: bool) -> Vec<u8> {
 
 pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> Result<Value, String> {
     let conn = crate::db::open(db_path)?;
-    let cfg = Config::clean(cfg.clone());
+    let cfg = asset_config(&conn,asset_id,cfg);
     let (taken, source, camera): (Option<String>, Option<String>, Option<String>) = conn
         .query_row(
             "SELECT effective_taken_at, date_source, camera FROM media_assets WHERE id=?1",
@@ -1035,6 +1064,10 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
         return Err("原文件当前不可用（外置盘离线或已移动）".into());
     }
     let path = PathBuf::from(&file.absolute_path);
+    if cfg.skip_watermarked && has_watermark(&conn,&path)? {
+        let img=media::load_oriented(&path)?.thumbnail(max_side.max(256),max_side.max(256)).to_rgba8();
+        return Ok(json!({"image":format!("data:image/jpeg;base64,{}",base64::engine::general_purpose::STANDARD.encode(encode(&img,"jpg",88)?)),"width":img.width(),"height":img.height(),"font_px":0,"text":"","file_name":file.file_name,"warning":"已有水印：批量处理时跳过，不会叠加","watermarked":true}));
+    }
     let mut img = media::load_oriented(&path)?.to_rgba8();
     img = rotate_image_by(img, cfg.rotate_image);
     if max_side > 0 && (img.width() > max_side || img.height() > max_side) {
@@ -1066,6 +1099,7 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
         // 原始 EXIF 方向：界面用它提示"这张是竖拍的、按 6 转过来了"
         "exif_orientation": media::image_orientation(&path),
         "rotate_image": cfg.rotate_image,
+        "correction": conn.query_row("SELECT degrees FROM watermark_rotation WHERE asset_id=?1",rusqlite::params![asset_id],|r|r.get::<_,i32>(0)).unwrap_or(0),
         "block": bx,
         "pos_x": cfg.pos_x,
         "pos_y": cfg.pos_y,
@@ -1206,6 +1240,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
 
     let mut errors: Vec<String> = Vec::new();
     let mut skipped_nodate = 0;
+    let mut skipped_watermarked = 0;
     let mut overwritten = 0usize;
     let mut restorable = 0usize;
     let mut skipped_video = 0usize;
@@ -1217,6 +1252,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
         if job.is_cancelled() {
             break;
         }
+        let cfg=asset_config(&conn,id,&cfg);
         let row: Option<(Option<String>, Option<String>, Option<String>, String)> = conn
             .query_row(
                 "SELECT effective_taken_at, date_source, camera, media_type FROM media_assets WHERE id=?1",
@@ -1254,6 +1290,9 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                 errors.push(format!("{}：原文件不可用", file.file_name));
             }
             continue;
+        }
+        if cfg.skip_watermarked && has_watermark(&conn,Path::new(&file.absolute_path))? {
+            skipped_watermarked += 1; job.skip(); continue;
         }
         let needs_date = cfg.require_date && cfg.text.contains("{date}") && taken.is_none();
         if needs_date {
@@ -1329,6 +1368,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                     if overwrite {
                         overwritten += 1;
                         refresh_after_overwrite(&conn, &file, db_path)?;
+                        mark_path(&conn,&target,true)?;
                         if record_backup(&conn, &job.id, &file.asset_id, &file.absolute_path, backup_used.as_deref()) {
                             restorable += 1;
                         }
@@ -1345,6 +1385,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                         );
                     } else {
                         crate::scan::register_output(&conn, id, &job.id, "watermark", &target)?;
+                        mark_path(&conn,&target,true)?;
                         crate::db::log_op(
                             &conn,
                             "watermark",
@@ -1470,6 +1511,8 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                 if is_overwrite {
                     overwritten += 1;
                     refresh_after_overwrite(&conn, &file, db_path)?;
+                    mark_path(&conn,&target,true)?;
+                    conn.execute("DELETE FROM watermark_rotation WHERE asset_id IN (SELECT asset_id FROM media_files WHERE absolute_path=?1)",rusqlite::params![target.to_string_lossy()]).map_err(|e|e.to_string())?;
                     if record_backup(&conn, &job.id, &file.asset_id, &file.absolute_path, backup_used.as_deref()) {
                         restorable += 1;
                     }
@@ -1486,6 +1529,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                     );
                 } else {
                     crate::scan::register_output(&conn, id, &job.id, "watermark", &target)?;
+                    mark_path(&conn,&target,true)?;
                     crate::db::log_op(
                         &conn,
                         "watermark",
@@ -1516,6 +1560,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
         "成功 {}（其中覆盖原图 {}），跳过 {}（其中无拍摄时间 {}），失败 {}",
         p.succeeded, overwritten, p.skipped, skipped_nodate, p.failed
     );
+    msg.push_str(&format!("；已有水印跳过 {}",skipped_watermarked));
     if let Some(root) = &backup_root {
         if root.exists() {
             msg.push_str(&format!("；原件备份：{}", root.display()));

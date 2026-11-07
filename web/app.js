@@ -235,6 +235,7 @@ const scrollEl = () => $('#grid-scroll');
 function filterParams(extra = {}) {
   const p = {};
   const f = S.filter;
+  if (f.watermarked !== undefined && f.watermarked !== '') p.watermarked = String(f.watermarked);
   ['q', 'media_type', 'source_id', 'year', 'month', 'date_from', 'date_to', 'confidence', 'tag', 'job_id'].forEach(k => {
     if (f[k]) p[k] = f[k];
   });
@@ -426,7 +427,7 @@ function updateNode(node, i, force) {
 
   if (S.mode === 'grid') {
     const sig = [it.id, it.posterTs, sel, it.availability, it.marked, it.dup, it.needs_review,
-      it.star, it.favorite, it.live, (it.tags || []).join(',')].join('|');
+      it.star, it.favorite, it.live, it.watermarked, (it.tags || []).join(',')].join('|');
     if (sig !== node.dataset.sig || force) {
       node.dataset.sig = sig;
       const thumb = node.querySelector('.thumb');
@@ -459,7 +460,7 @@ function updateNode(node, i, force) {
          <div class="tags-on-thumb">${tagLine}</div>
          <div class="dur">${isVideo ? fmtDur(it.duration_ms) : ''}</div>`;
       node.querySelector('.cap .n').textContent = it.file_name || '(未知文件)';
-      node.querySelector('.cap .d').textContent = fmtTaken(it.taken_at, it.date_precision) + ' · ' + fmtSize(it.size_bytes);
+      node.querySelector('.cap .d').textContent = (it.watermarked ? '已有水印 · ' : '') + fmtTaken(it.taken_at, it.date_precision) + ' · ' + fmtSize(it.size_bytes);
     }
   } else {
     const sig = [it.id, sel, it.star, it.favorite, it.live].join('|');
@@ -472,7 +473,7 @@ function updateNode(node, i, force) {
         onerror="${isVid ? 'this.style.visibility=\'hidden\';pvmPosterFallback(this)' : 'this.style.visibility=\'hidden\''}">`;
       node.querySelector('.rname').textContent =
         (it.star ? '★ ' : '') + (it.file_name || '') + (it.live ? '  · LIVE' : '');
-      node.querySelector('.rdate').textContent = fmtTaken(it.taken_at, it.date_precision);
+      node.querySelector('.rdate').textContent = (it.watermarked ? '已有水印 · ' : '') + fmtTaken(it.taken_at, it.date_precision);
       node.querySelector('.rsize').textContent = fmtSize(it.size_bytes);
       node.querySelector('.rres').textContent =
         (it.width && it.height ? it.width + '×' + it.height : '') + (it.media_type === 'video' ? ' ' + fmtDur(it.duration_ms) : '');
@@ -2192,7 +2193,7 @@ const WM_DEFAULTS = {
   shadow: 0.1, shadow_color: '#000000', plate: false, plate_color: '#000000', plate_opacity: 0.42,
   plate_radius: 0.22, plate_pad: 0.34, plate_full: false, rotate: 0, rotate_image: 0,
   date_format: '%Y-%m-%d', text: '{date}',
-  custom: '', source_hint: false, require_date: true, output_format: 'same', video: true,
+  custom: '', source_hint: false, require_date: true, output_format: 'same', video: true, skip_watermarked: true,
 };
 
 function parseJsonSetting(v) {
@@ -2239,6 +2240,7 @@ function wmWriteUI() {
   $('#wm-plate-opacity').value = c.plate_opacity;
   $('#wm-rotate').value = c.rotate;
   $('#wm-rotimg').value = String(c.rotate_image || 0);
+  $('#wm-known-skip').checked = c.skip_watermarked !== false;
   $('#wm-datefmt').value = c.date_format || '%Y-%m-%d';
   $('#wm-text').value = c.text || '{date}';
   $('#wm-custom').value = c.custom || '';
@@ -2286,6 +2288,7 @@ function wmReadUI() {
   c.plate_opacity = Number($('#wm-plate-opacity').value);
   c.rotate = Number($('#wm-rotate').value);
   c.rotate_image = Number($('#wm-rotimg').value) || 0;
+  c.skip_watermarked = $('#wm-known-skip').checked;
   c.date_format = $('#wm-datefmt').value.trim() || '%Y-%m-%d';
   c.text = $('#wm-text').value;
   c.custom = $('#wm-custom').value;
@@ -2298,7 +2301,7 @@ function wmReadUI() {
 }
 
 function wmScope() {
-  const sel = S.sel.size;
+  const sel = $('#wm-scope-mode').value === 'filtered' ? 0 : S.sel.size;
   return sel ? { ids: Array.from(S.sel), count: sel, label: `已选 ${sel} 项` }
              : { ids: null, count: S.filter.total || 0, label: `当前筛选 ${S.filter.total || 0} 项` };
 }
@@ -2403,8 +2406,9 @@ async function wmLoadPresets() {
 
 async function wmPickSamples() {
   try {
-    const r = S.sel.size
-      ? { items: await Promise.all(Array.from(S.sel).slice(0, 12).map(id => apiGet('/api/media/' + id))) }
+    const scope = wmScope();
+    const r = scope.ids
+      ? { items: await Promise.all(scope.ids.slice(0, 12).map(id => apiGet('/api/media/' + id))) }
       : await apiGet('/api/media', filterParams({ limit: 400, media_type: 'image' }));
     const items = (r.items || []).filter(i => i.media_type === 'image' && i.width && i.height);
     WM.gen++;
@@ -2574,7 +2578,8 @@ async function wmRefreshPreviews() {
       card.innerHTML = `
         <div class="ph"><img src="${r.image}" alt="">${isFree && r.block ? wmFreeBox(r) : ''}</div>
         <div class="meta">
-          <span>${esc(s.tag)}</span><span><b>${r.width}×${r.height}</b></span>
+          <span>${esc(s.tag)} ${esc(r.file_name || '')}</span><span><b>${r.width}×${r.height}</b></span>
+          ${!r.watermarked ? `<label>仅此照片方向（预览与输出）<select data-wm-rotation="${esc(s.item.id)}">${[0,90,180,270].map(deg => `<option value="${deg}" ${deg === Number(r.correction || 0) ? 'selected' : ''}>${deg === 0 ? '按 EXIF' : deg + '°'}</option>`).join('')}</select></label>` : ''}
           <span>字号 <b>${r.font_px}px</b></span>
           <span>${esc(r.text || '')}</span>
           <span title="照片自带的 EXIF 方向；6/8 表示竖拍">${r.exif_orientation > 1 ? `EXIF 方向 ${r.exif_orientation}` : '无方向标记'}${
@@ -3559,3 +3564,26 @@ $('#edit-pick').addEventListener('click', async () => {
   await pickInto('#edit-out');
 });
 $('#edit-backups').addEventListener('click', openEditBackupList);
+$('#f-watermark').addEventListener('change', e => setFilter('watermarked', e.target.value));
+$('#sel-watermark').addEventListener('click', () => {
+  $('#wm-scope-mode').value = 'selected'; switchView('watermark');
+});
+$('#wm-library').addEventListener('click', () => switchView('library'));
+$('#wm-horizontal').addEventListener('click', () => {
+  wmCfg().rotate = 0; wmWriteUI(); wmSchedulePreview();
+});
+$('#wm-known-skip').addEventListener('change', () => { wmReadUI(); wmSchedulePreview(); });
+$('#wm-scope-mode').addEventListener('change', async () => { wmUpdateScope(); await wmPickSamples(); wmSchedulePreview(); });
+$('#wm-previews').addEventListener('change', async e => {
+  const id = e.target.dataset.wmRotation;
+  if (!id) return;
+  try { await api('/api/watermark/rotation', { method: 'POST', body: { id, degrees: Number(e.target.value) } }); wmSchedulePreview(); }
+  catch (err) { toast(err.message, 'err'); }
+});
+$('#sel-watermark-mark').addEventListener('click', () => {
+  const ids = Array.from(S.sel); if (!ids.length) return;
+  modal(`<div class="modal-head"><h3>已有水印标记 · ${ids.length} 项</h3></div><div class="modal-body">确认照片上已经有手机或其他软件的水印后，可批量标记。此操作只记录状态，不修改照片。</div><div class="modal-foot"><button class="btn" id="wm-mark-cancel">取消</button><button class="btn" id="wm-mark-no">清除标记</button><button class="btn primary" id="wm-mark-yes">标记已有水印</button></div>`);
+  $('#wm-mark-cancel').onclick = closeModal;
+  const save = async marked => { try { await api('/api/watermark/mark', { method: 'POST', body: { ids, marked } }); closeModal(); await loadMedia(false); toast('水印状态已更新'); } catch(e) { toast(e.message,'err'); } };
+  $('#wm-mark-yes').onclick = () => save(true); $('#wm-mark-no').onclick = () => save(false);
+});

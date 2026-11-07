@@ -139,6 +139,7 @@ select:hover { border-color: #3a4252; }
 .icon-btn:hover { color: var(--text); background: var(--panel-3); }
 
 .selbar {
+  flex-wrap: wrap;
   display: flex; align-items: center; gap: 8px; padding: 8px 16px;
   background: #1a2130; border-bottom: 1px solid #263049; font-size: 12.5px;
 }
