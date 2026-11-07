@@ -28,6 +28,7 @@ pub struct App {
     pub jobs: JobManager,
     pub token: String,
     pub version: String,
+    pub windows: crate::window_lifetime::WindowLifetime,
 }
 
 pub type Shared = Arc<App>;
@@ -374,7 +375,14 @@ fn route(
         ["api", "export"] => Some(api_export(app, params)),
         ["api", "facets"] => Some(api_facets(app)),
         ["api", "capabilities"] => Some(api_capabilities()),
-        ["api", "pick-folder"] if m == "POST" => Some(api_pick_folder()),
+        ["api", "pick-folder"] if m == "POST" => Some(api_pick_folder(req)),
+        ["api", "window", action] if m == "POST" && matches!(*action,"heartbeat"|"close") => {
+            let body = read_body(req).unwrap_or(Value::Null);
+            match body.get("window_id").and_then(Value::as_str).filter(|id|!id.is_empty() && id.len()<=128) {
+                Some(id) => { app.windows.update(id,*action=="close"); Some(ok(json!(true))) },
+                None => Some(json_err(400,"缺少窗口标识")),
+            }
+        },
         _ => None,
     }
 }
@@ -478,20 +486,27 @@ fn api_facets(app: &Shared) -> Response<Body> {
 }
 
 /// 调起 Windows 原生文件夹选择框（PowerShell + WinForms，无需额外依赖）。
-fn api_pick_folder() -> Response<Body> {
+fn api_pick_folder(req: &mut Request) -> Response<Body> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms | Out-Null
-$d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = '选择文件夹'
-$d.ShowNewFolderButton = $true
-if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.SelectedPath) }"#;
+    static PICKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = PICKER.try_lock() else { return json_err(409,"已有文件夹选择窗口打开，请先完成或取消选择") };
+    let initial = read_body(req).and_then(|v|v.get("initial_path").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+    #[link(name = "user32")]
+    extern "system" { fn GetForegroundWindow() -> *mut std::ffi::c_void; }
+    let owner = unsafe { GetForegroundWindow() } as usize;
+    let script = include_str!("folder_picker.ps1");
     let out = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", script])
+        .env("PVM_PICKER_OWNER",owner.to_string())
+        .env("PVM_PICKER_INITIAL",initial)
         .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
         Ok(o) => {
+            if !o.status.success() {
+                return json_err(500,&format!("无法打开文件夹选择框：{}",String::from_utf8_lossy(&o.stderr).trim()));
+            }
             let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
             ok(json!({"path": if path.is_empty() { Value::Null } else { Value::String(path) }}))
         }

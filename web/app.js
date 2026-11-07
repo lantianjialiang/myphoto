@@ -11,6 +11,23 @@ const TOKEN = (() => {
 })();
 const AUTH = 'token=' + encodeURIComponent(TOKEN);
 
+// Window presence, rather than the short-lived browser launcher, owns the service.
+const WINDOW_ID = crypto.randomUUID();
+function notifyWindow(action) {
+  const body = JSON.stringify({ window_id: WINDOW_ID });
+  const url = '/api/window/' + action + '?' + AUTH;
+  if (action === 'close') {
+    navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+  } else {
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {});
+  }
+}
+notifyWindow('heartbeat');
+setInterval(() => notifyWindow('heartbeat'), 15000);
+window.addEventListener('pageshow', () => notifyWindow('heartbeat'));
+window.addEventListener('pagehide', e => { if (!e.persisted) notifyWindow('close'); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) notifyWindow('heartbeat'); });
+
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -46,7 +63,12 @@ function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
+let lastConnectionToast = 0;
 function toast(msg, kind = '') {
+  if (msg.startsWith('本地服务暂时没有响应')) {
+    if (Date.now() - lastConnectionToast < 6000) return;
+    lastConnectionToast = Date.now();
+  }
   const d = document.createElement('div');
   d.className = 'toast ' + kind;
   d.textContent = msg;
@@ -1296,35 +1318,64 @@ $('#btn-scan-all').addEventListener('click', async () => {
   switchView('jobs');
 });
 
-async function pickFolder() {
+let folderPickerPending = false;
+async function pickFolder(initialPath = '') {
+  if (folderPickerPending) { toast('请先完成或取消已经打开的文件夹选择窗口'); return null; }
+  folderPickerPending = true;
+  const buttons = $$('#btn-add-source, #aw-pick, #al-pick, #sl-pick, #wm-pick, #edit-pick')
+    .map(el => ({ el, disabled: el.disabled }));
+  buttons.forEach(({ el }) => { el.disabled = true; });
   try {
-    const r = await api('/api/pick-folder', { method: 'POST' });
+    const r = await api('/api/pick-folder', { method: 'POST', body: { initial_path: initialPath } });
     if (r && r.path) return r.path;
     // 用户取消 → 不进入手动输入
     return null;
   } catch (e) {
     toast('系统文件夹对话框不可用，请手动输入路径', 'err');
-    return await promptPath();
+    return await promptPath(initialPath);
+  } finally {
+    folderPickerPending = false;
+    buttons.forEach(({ el, disabled }) => { if (el.isConnected) el.disabled = disabled; });
   }
 }
 
+async function pickInto(selector) {
+  const input = $(selector);
+  if (!input) return;
+  const path = await pickFolder(input.value);
+  if (path && input.isConnected) { input.value = path; input.dispatchEvent(new Event('input', { bubbles: true })); }
+}
+
 /** 手动输入目录路径（对话框不可用时的兜底）。 */
-function promptPath() {
+function promptPath(initialPath = '') {
   return new Promise(resolve => {
-    modal(`<div class="modal-head"><h3>输入文件夹路径</h3></div>
+    const previousFocus = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-root'; overlay.style.zIndex = '61';
+    overlay.innerHTML = `<div class="modal narrow"><div class="modal-head"><h3>输入文件夹路径</h3></div>
       <div class="modal-body">
         <p style="color:#98a1b3;margin-top:0">支持本机磁盘、外接硬盘与 UNC 路径，例如 D:\\Photos 或 \\\\NAS\\照片。</p>
-        <div class="field"><input type="text" id="pp-path" placeholder="D:\\Photos"></div>
+        <div class="field"><input type="text" id="pp-path" value="${esc(initialPath)}" placeholder="D:\\Photos"></div>
       </div>
       <div class="modal-foot"><button class="btn" id="pp-cancel">取消</button>
-        <button class="btn primary" id="pp-ok">确定</button></div>`, { narrow: true });
-    $('#pp-cancel').onclick = () => { closeModal(); resolve(null); };
-    $('#pp-ok').onclick = () => {
-      const v = $('#pp-path').value.trim();
-      closeModal();
-      resolve(v || null);
+        <button class="btn primary" id="pp-ok">确定</button></div></div>`;
+    document.body.appendChild(overlay);
+    const finish = value => {
+      overlay.remove();
+      if (previousFocus && previousFocus.isConnected) previousFocus.focus();
+      resolve(value);
     };
-    setTimeout(() => $('#pp-path').focus(), 60);
+    $('#pp-cancel', overlay).onclick = () => finish(null);
+    const submit = () => finish($('#pp-path', overlay).value.trim() || null);
+    $('#pp-ok', overlay).onclick = submit;
+    overlay.onclick = e => { if (e.target === overlay) finish(null); };
+    overlay.addEventListener('keydown', e => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        if (e.key === 'Escape') finish(null); else submit();
+      }
+    });
+    $('#pp-path', overlay).focus();
   });
 }
 
@@ -1617,8 +1668,7 @@ async function openArchiveWizard(ids, filter) {
   $('#aw-close').onclick = closeModal;
   $('#aw-cancel').onclick = closeModal;
   $('#aw-pick').onclick = async () => {
-    const p = await pickFolder();
-    if (p) $('#aw-out').value = p;
+    await pickInto('#aw-out');
   };
 
   $('#aw-plan').onclick = async () => {
@@ -2595,8 +2645,7 @@ $('#wm-preset-del').addEventListener('click', async () => {
   } catch (e) { toast(e.message, 'err'); }
 });
 $('#wm-pick').addEventListener('click', async () => {
-  const p = await pickFolder();
-  if (p) $('#wm-out').value = p;
+  await pickInto('#wm-out');
 });
 $('#wm-mode').addEventListener('change', () => {
   wmSyncMode();
@@ -2713,8 +2762,7 @@ function openAlbumWizard(ids) {
     paint();
   }).catch(() => { });
   $('#al-pick').onclick = async () => {
-    const p = await pickFolder();
-    if (p) $('#al-out').value = p;
+    await pickInto('#al-out');
   };
   $('#al-password').addEventListener('input', () => {
     const encrypted = $('#al-password').value.length > 0;
@@ -2793,8 +2841,7 @@ function openSlideshowWizard(ids) {
   $('#sl-close').onclick = closeModal;
   $('#sl-cancel').onclick = closeModal;
   $('#sl-pick').onclick = async () => {
-    const p = await pickFolder();
-    if (p) $('#sl-out').value = p;
+    await pickInto('#sl-out');
   };
   // 没有 FFmpeg 就提前说明，避免用户跑完才发现
   if (S.caps && S.caps.ffmpeg && !S.caps.ffmpeg.ok) {
@@ -3509,7 +3556,6 @@ $('#edit-mode').addEventListener('change', () => {
   }
 });
 $('#edit-pick').addEventListener('click', async () => {
-  const p = await pickFolder();
-  if (p) $('#edit-out').value = p;
+  await pickInto('#edit-out');
 });
 $('#edit-backups').addEventListener('click', openEditBackupList);

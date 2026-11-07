@@ -30,6 +30,7 @@ mod slideshow;
 mod tags;
 mod util;
 mod watch;
+mod window_lifetime;
 mod watermark;
 mod web;
 
@@ -86,6 +87,7 @@ fn say(msg: &str) {
 }
 
 fn find_browser() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PVM_BROWSER").map(PathBuf::from).filter(|p|p.is_file()) { return Some(path); }
     let candidates = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -169,6 +171,7 @@ fn main() {
         jobs: job_manager,
         token: util::uuid(),
         version: VERSION.to_string(),
+        windows: window_lifetime::WindowLifetime::default(),
     });
 
     // 目录变更监控（轮询，默认关闭；在设置里开启后按间隔增量扫描）
@@ -192,14 +195,19 @@ fn main() {
 
     match launch_window(&url, &paths.data_dir.join("window-profile")) {
         Some(mut child) => {
-            // 窗口关闭即退出应用；单文件任务在后台线程中，退出时未完成的任务会被标记为中断
+            // Browser launchers may exit while the actual app window remains open.
+            let mut launcher_finished = false;
+            let mut last_tick = std::time::Instant::now();
             loop {
                 std::thread::sleep(Duration::from_millis(600));
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {}
-                    Err(_) => break,
+                let now = std::time::Instant::now();
+                if now.duration_since(last_tick) > Duration::from_secs(30) { app.windows.resumed(); }
+                last_tick = now;
+                if !launcher_finished && matches!(child.try_wait(),Ok(Some(_))) {
+                    launcher_finished = true;
+                    say("浏览器启动进程已退出，继续为应用窗口提供服务。");
                 }
+                if app.windows.should_exit(now) && app.jobs.running().is_empty() { break; }
             }
             say("窗口已关闭，程序退出。");
         }
