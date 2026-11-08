@@ -1123,6 +1123,7 @@ pub struct RunRequest {
     pub mode: String,
     /// 覆盖前把原件备份到 backups/<job>/；默认开启
     pub backup: bool,
+    pub backup_dir: String,
 }
 
 impl Default for RunRequest {
@@ -1137,6 +1138,7 @@ impl Default for RunRequest {
             skip_existing: true,
             mode: "copy".into(),
             backup: true,
+            backup_dir: String::new(),
         }
     }
 }
@@ -1225,10 +1227,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
     // 覆盖模式的备份目录：数据目录\backups\wm-<jobId>，真正用到时才创建
     let backup_root = if overwrite && req.backup {
         Some(
-            db_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("backups")
+            (if req.backup_dir.is_empty() { db_path.parent().unwrap_or(Path::new(".")).join("backups") } else { PathBuf::from(&req.backup_dir) })
                 .join(format!("wm-{}", job.id)),
         )
     } else {

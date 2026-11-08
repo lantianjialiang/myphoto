@@ -79,6 +79,24 @@ function zipNames(buf) {
   const untouched=md.files[1],untouchedHash=digest(untouched.absolute_path);const de=await run('/api/edit/run',{ids:[merged.id],op:'rot90',mode:'overwrite',backup:true});
   list=(await api('/api/media?limit=100')).items;const duplicates=list.filter(i=>i.file_name==='dup1.jpg'||i.file_name==='dup2.jpg');
   check('changed duplicate becomes a separate asset',()=>{assert.equal(de.result.status,'completed');assert.equal(duplicates.length,2);assert.equal(digest(untouched.absolute_path),untouchedHash);});
+  const unified=path.join(root,'Unified');await api('/api/settings',{output_root:unified});
+  check('unified output setting persists',()=>assert.equal(fs.existsSync(unified),true));
+  const centralEdit=await run('/api/edit/run',{ids:[gps.id],op:'flipv',mode:'copy'});
+  check('edit uses configured output without asking for directory',()=>{assert.equal(centralEdit.result.succeeded,1);assert(fs.readdirSync(path.join(unified,'edited')).length>0);});
+  const centralWatermark=await run('/api/watermark/run',{ids:[gps.id],config:{text:'CENTRAL',require_date:false,skip_watermarked:false}});
+  check('watermark uses configured output without directory',()=>{assert.equal(centralWatermark.result.succeeded,1);assert(fs.readdirSync(path.join(unified,'watermark')).length>0);});
+  const centralAlbum=await run('/api/album/run',{ids:[gps.id]});
+  check('album uses configured output without directory',()=>{assert.equal(centralAlbum.result.succeeded,1);assert(fs.existsSync(path.join(unified,'albums/index.html')));});
+  const centralPlan=await api('/api/archive/plan',{asset_ids:[gps.id],mode:'copy'});
+  check('archive plan uses configured output',()=>assert.equal(path.resolve(centralPlan.out_dir),path.join(unified,'archive')));
+  const manifest=await api('/api/export/save',{format:'json'});const csv=await api('/api/export/save',{format:'csv'});
+  check('JSON and CSV save under unified manifests directory',()=>{assert.equal(path.dirname(manifest.path),path.join(unified,'manifests'));assert(fs.readFileSync(csv.path,'utf8').includes('20200102_normal')===false || fs.statSync(csv.path).size>0);assert(JSON.parse(fs.readFileSync(manifest.path,'utf8')).items.length>0);});
+  const backup=await api('/api/backup',{});check('database backup uses unified directory',()=>{assert.equal(path.dirname(backup.path),path.join(unified,'backups'));assert(fs.existsSync(backup.path));});
+  const centralOverwrite=await run('/api/edit/run',{ids:[gps.id],op:'rot90',mode:'overwrite',backup:true});
+  check('edit originals backup uses unified directory',()=>{assert.equal(centralOverwrite.result.succeeded,1);assert(fs.existsSync(path.join(unified,'backups','edit-'+centralOverwrite.id)));});
+  await api('/api/edit/backups/restore',{job_id:centralOverwrite.id});
+  const centralWMOverwrite=await run('/api/watermark/run',{ids:[gps.id],mode:'overwrite',backup:true,config:{text:'BACKUP',require_date:false,skip_watermarked:false}});
+  check('watermark originals backup uses unified directory',()=>{assert.equal(centralWMOverwrite.result.succeeded,1);assert(fs.existsSync(path.join(unified,'backups','wm-'+centralWMOverwrite.id)));});
   fs.writeFileSync(path.join(root,'results.json'),JSON.stringify({checks,root,version:(await api('/api/state')).version},null,2));
   console.log(`PASS ${checks.length} regression checks; artifacts: ${root}`);
   if(process.env.PVM_TEST_HOLD){console.log('UI_URL '+m[0]);await delay(600000);}

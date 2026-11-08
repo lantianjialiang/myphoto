@@ -375,7 +375,12 @@ fn route(
         ["api", "settings"] if m == "GET" => Some(api_settings_get(app)),
         ["api", "settings"] if m == "POST" => Some(api_settings_set(app, req)),
         ["api", "backup"] if m == "POST" => Some(api_backup(app)),
-        ["api", "export"] => Some(api_export(app, params)),
+        ["api", "export", "save"] if m == "POST" => {
+ let body=read_body(req).unwrap_or(Value::Null);
+ let map=body.as_object().map(|obj|obj.iter().map(|(k,v)|(k.clone(),v.as_str().map(str::to_owned).unwrap_or_else(||v.to_string()))).collect()).unwrap_or_default();
+ Some(api_export(app,&map,true))
+ },
+        ["api", "export"] => Some(api_export(app, params, false)),
         ["api", "facets"] => Some(api_facets(app)),
         ["api", "capabilities"] => Some(api_capabilities()),
         ["api", "pick-folder"] if m == "POST" => Some(api_pick_folder(req)),
@@ -494,7 +499,9 @@ fn api_pick_folder(req: &mut Request) -> Response<Body> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     static PICKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let Ok(_guard) = PICKER.try_lock() else { return json_err(409,"已有文件夹选择窗口打开，请先完成或取消选择") };
-    let initial = read_body(req).and_then(|v|v.get("initial_path").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+    let body = read_body(req).unwrap_or(Value::Null);
+    let initial = body.get("initial_path").and_then(Value::as_str).unwrap_or("");
+    let kind = body.get("kind").and_then(Value::as_str).filter(|k|matches!(*k,"file"|"font")).unwrap_or("folder");
     #[link(name = "user32")]
     extern "system" { fn GetForegroundWindow() -> *mut std::ffi::c_void; }
     let owner = unsafe { GetForegroundWindow() } as usize;
@@ -503,6 +510,7 @@ fn api_pick_folder(req: &mut Request) -> Response<Body> {
         .args(["-NoProfile", "-STA", "-Command", script])
         .env("PVM_PICKER_OWNER",owner.to_string())
         .env("PVM_PICKER_INITIAL",initial)
+        .env("PVM_PICKER_KIND",kind)
         .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
@@ -1480,7 +1488,7 @@ fn api_plan(app: &Shared, req: &mut Request) -> Response<Body> {
             }
         }
     }
-    let out_dir = body.get("out_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let out_dir = output_dir(app, &body, "archive");
     let template = body.get("template").and_then(|v| v.as_str()).map(|s| s.to_string());
     let conflict = body.get("conflict").and_then(|v| v.as_str()).map(|s| s.to_string());
     let mode = body.get("mode").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -1655,10 +1663,25 @@ fn api_settings_get(app: &Shared) -> Response<Body> {
     ok(settings_map(&conn))
 }
 
+fn output_root(app: &Shared) -> PathBuf {
+    open_db(app).ok().and_then(|conn|db::get_setting(&conn,"output_root"))
+        .filter(|s|!s.trim().is_empty()).map(PathBuf::from)
+        .unwrap_or_else(||app.paths.data_dir.join("exports"))
+}
+
+fn output_dir(app: &Shared, body: &Value, kind: &str) -> String {
+    body.get("out_dir").and_then(Value::as_str).filter(|s|!s.trim().is_empty())
+        .map(str::to_owned).unwrap_or_else(||output_root(app).join(kind).to_string_lossy().into_owned())
+}
+
 fn api_settings_set(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     if let Some(obj) = body.as_object() {
+        if let Some(root)=obj.get("output_root").and_then(Value::as_str) {
+            if root.trim().is_empty() || !Path::new(root).is_absolute() { return json_err(400,"请选择输出根目录的完整路径") }
+            if let Err(e)=std::fs::create_dir_all(root) { return json_err(400,&format!("无法使用输出目录：{e}")) }
+        }
         for (k, v) in obj {
             let value = match v {
                 Value::String(s) => s.clone(),
@@ -1673,7 +1696,7 @@ fn api_settings_set(app: &Shared, req: &mut Request) -> Response<Body> {
 }
 
 fn api_backup(app: &Shared) -> Response<Body> {
-    let dir = app.paths.data_dir.join("backups");
+    let dir = output_root(app).join("backups");
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return json_err(500, &e.to_string());
     }
@@ -1707,7 +1730,13 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-fn api_export(app: &Shared, params: &std::collections::HashMap<String, String>) -> Response<Body> {
+fn save_export(app: &Shared, bytes: &[u8], ext: &str) -> Response<Body> {
+ use std::io::Write;
+ let dir=output_root(app).join("manifests"); let path=dir.join(format!("media-{}-{}.{}",util::stamp(),util::uuid(),ext));
+ let result=(||->Result<(),String>{std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?; let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?; file.write_all(bytes).map_err(|e|e.to_string())})();
+ match result {Ok(())=>ok(json!({"path":path.to_string_lossy()})),Err(e)=>json_err(500,&e)}
+}
+fn api_export(app: &Shared, params: &std::collections::HashMap<String, String>, save: bool) -> Response<Body> {
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     let filter = filter_from(params);
     let format = qs(params, "format").unwrap_or_else(|| "csv".into());
@@ -1745,6 +1774,7 @@ fn api_export(app: &Shared, params: &std::collections::HashMap<String, String>) 
             "count": entries.len(),
             "items": entries,
         });
+        if save { return save_export(app,&serde_json::to_vec_pretty(&manifest).unwrap_or_default(),"json"); }
         return respond_bytes(
             200,
             serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
@@ -1772,6 +1802,7 @@ fn api_export(app: &Shared, params: &std::collections::HashMap<String, String>) 
             csv_escape(i["path"].as_str().unwrap_or("")),
         ));
     }
+    if save { return save_export(app,csv.as_bytes(),"csv"); }
     respond_bytes(
         200,
         csv.into_bytes(),
@@ -1893,12 +1924,7 @@ fn api_edit_run(app: &Shared, req: &mut Request) -> Response<Body> {
     };
     let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("copy").to_string();
     let overwrite = mode.eq_ignore_ascii_case("overwrite");
-    let out_dir = body
-        .get("out_dir")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let out_dir = output_dir(app, &body, "edited");
     if out_dir.is_empty() && !overwrite {
         return json_err(400, "请先选择输出目录");
     }
@@ -1928,7 +1954,7 @@ fn api_edit_run(app: &Shared, req: &mut Request) -> Response<Body> {
             .to_string(),
         keep_exif: body.get("keep_exif").and_then(|v| v.as_bool()).unwrap_or(true),
     };
-    let data_dir = app.paths.data_dir.clone();
+    let data_dir = output_root(app);
     let db_path = app.paths.db_path.clone();
     let total = ids.len() as i64;
     let label = run.action.label();
@@ -2045,12 +2071,7 @@ fn api_wm_run(app: &Shared, req: &mut Request) -> Response<Body> {
         .unwrap_or("copy")
         .to_string();
     let overwrite = mode.eq_ignore_ascii_case("overwrite");
-    let out_dir = body
-        .get("out_dir")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let out_dir = output_dir(app, &body, "watermark");
     if out_dir.is_empty() && !overwrite {
         return json_err(400, "请先选择输出目录");
     }
@@ -2069,6 +2090,7 @@ fn api_wm_run(app: &Shared, req: &mut Request) -> Response<Body> {
         .and_then(|v| serde_json::from_value::<watermark::Config>(v).ok())
         .unwrap_or_default();
     let run = watermark::RunRequest {
+        backup_dir: output_root(app).join("backups").to_string_lossy().into_owned(),
         ids: ids.clone(),
         out_dir,
         config,
@@ -2097,12 +2119,7 @@ fn api_wm_run(app: &Shared, req: &mut Request) -> Response<Body> {
 
 fn api_album_run(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
-    let out_dir = body
-        .get("out_dir")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let out_dir = output_dir(app, &body, "albums");
     if out_dir.is_empty() {
         return json_err(400, "请先选择输出目录");
     }
@@ -2162,12 +2179,7 @@ fn api_album_run(app: &Shared, req: &mut Request) -> Response<Body> {
 
 fn api_slideshow_run(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
-    let out_dir = body
-        .get("out_dir")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let out_dir = output_dir(app, &body, "slideshows");
     if out_dir.is_empty() {
         return json_err(400, "请先选择输出目录");
     }

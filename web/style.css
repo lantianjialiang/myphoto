@@ -608,6 +608,14 @@ select:hover { border-color: #3a4252; }
 .bk-tip { font-size: 11.5px; color: var(--dim-2); line-height: 1.7; margin: 0 0 8px; }
 
 /* ---------------- 图像编辑面板 ---------------- */
+.library-editor { position:absolute; right:0; top:0; bottom:0; width:74%; display:flex; flex-direction:column; z-index:6; background:var(--panel); border-left:1px solid var(--line); box-shadow:-8px 0 28px #0006; }
+.editor-heading { display:flex; align-items:center; gap:12px; padding:9px 12px; border-bottom:1px solid var(--line); }
+.editor-heading span { flex:1; color:var(--dim); }
+#view-library.editing #grid-scroll { width:26%; }
+.library-editor .wm-layout { grid-template-columns:260px minmax(0,1fr); }
+.library-editor .wm-previews { grid-template-columns:minmax(0,1fr); padding:8px; }
+.library-editor .wm-card .ph { height: min(45vh,420px); }
+@media(max-width:1100px) { .library-editor {width:100%;} .library-editor .wm-layout {grid-template-columns:230px minmax(0,1fr);} }
 .edit-ops { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
 .edit-op {
   display: flex; flex-direction: column; align-items: center; gap: 6px;

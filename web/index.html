@@ -22,7 +22,6 @@
       <button data-view="dupes"><i>⧉</i><span>重复文件</span><em id="badge-dup" hidden></em></button>
       <button data-view="similar"><i>≈</i><span>相似照片</span></button>
       <button data-view="watermark"><i>✦</i><span>时间水印</span></button>
-      <button data-view="edit"><i>⟳</i><span>图像编辑</span></button>
       <button data-view="jobs"><i>≡</i><span>任务中心</span><em id="badge-jobs" hidden></em></button>
       <button data-view="sources"><i>⛁</i><span>媒体源</span></button>
       <button data-view="settings"><i>⚙</i><span>设置</span></button>
@@ -96,6 +95,7 @@
       <button class="btn sm" id="sel-star">★ 星标</button>
       <button class="btn sm" id="sel-mark">标记 / 取消标记</button>
       <button class="btn sm primary" id="sel-archive">加入归档任务</button>
+<button class="btn sm primary" id="sel-edit">编辑所选照片</button>
       <button class="btn sm primary" id="sel-watermark">给所选照片加水印</button><button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
     </div>
 
@@ -234,6 +234,7 @@
               <label class="wm-check" style="margin-top:8px"><input type="checkbox" id="wm-bold" checked> 粗体</label>
               <div class="wm-row" style="margin-top:8px">
                 <input type="text" id="wm-font-path" placeholder="自定义字体文件（.ttf/.ttc/.otf）" style="flex:1">
+<button class="btn sm" id="wm-font-browse">浏览字体文件…</button>
                 <button class="btn sm" id="wm-font-validate">校验</button>
               </div>
               <div class="wm-hint" id="wm-font-hint">
@@ -374,7 +375,7 @@
       </div>
 
       <!-- 图像编辑：旋转 / 裁剪 / 调色 / 打码 -->
-      <div class="view" id="view-edit">
+      <div class="library-editor" id="library-editor" hidden><div class="editor-heading"><b>照片编辑</b><span id="edit-context"></span><button class="btn sm" id="edit-close">收起编辑</button></div>
         <div class="wm-layout">
           <aside class="wm-panel" id="edit-panel">
             <div class="wmbox">
@@ -509,7 +510,7 @@
               <div class="wm-samples" id="edit-help">
                 <b style="color:#cddcff">怎么用</b>：
                 1) 在「媒体库」里勾选要处理的照片（没勾选则处理当前筛选结果）；
-                2) 回到这一页，选择编辑方式（旋转/裁剪/调色/打码）；
+                2) 直接选择编辑方式；
                 3) 右侧会实时预览效果，确认后点「应用到所选照片」。
               </div>
             </div>
@@ -578,7 +579,8 @@
       <div class="detail-title" id="d-title">详情</div>
       <div class="detail-tools">
         <button class="icon-btn" id="d-rotate" title="旋转预览（不修改原图）">↻</button>
-        <button class="icon-btn" id="d-close" title="关闭">×</button>
+        <button class="btn sm" id="d-edit">编辑此照片</button>
+<button class="icon-btn" id="d-close" title="关闭">×</button>
       </div>
     </div>
     <div class="detail-body" id="d-body"></div>

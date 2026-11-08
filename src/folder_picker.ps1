@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type @'
+Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll' -TypeDefinition @'
 using System;
 using System.Windows.Forms;
 public sealed class PickerWindow : IWin32Window {
@@ -10,12 +10,20 @@ public sealed class PickerWindow : IWin32Window {
     public PickerWindow(long handle) { Handle = new IntPtr(handle); }
 }
 '@
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$isFile = $env:PVM_PICKER_KIND -eq 'file' -or $env:PVM_PICKER_KIND -eq 'font'
+if ($isFile) {
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = '选择文件'
+    $dialog.CheckFileExists = $true
+    $dialog.Multiselect = $false
+    $dialog.Filter = if ($env:PVM_PICKER_KIND -eq 'font') { '字体文件 (*.ttf;*.ttc;*.otf)|*.ttf;*.ttc;*.otf|所有文件 (*.*)|*.*' } else { '所有文件 (*.*)|*.*' }
+} else { $dialog = New-Object System.Windows.Forms.FolderBrowserDialog }
 $owner = New-Object System.Windows.Forms.Form
 try {
-    $dialog.Description = '选择文件夹'
-    $dialog.ShowNewFolderButton = $true
-    if ($env:PVM_PICKER_INITIAL -and [System.IO.Directory]::Exists($env:PVM_PICKER_INITIAL)) {
+    if (!$isFile) { $dialog.Description = '选择文件夹'; $dialog.ShowNewFolderButton = $true }
+    if ($isFile -and $env:PVM_PICKER_INITIAL) {
+        $dialog.FileName = $env:PVM_PICKER_INITIAL
+    } elseif ($env:PVM_PICKER_INITIAL -and [System.IO.Directory]::Exists($env:PVM_PICKER_INITIAL)) {
         $dialog.SelectedPath = $env:PVM_PICKER_INITIAL
     }
     # A shown, invisible owner keeps the native dialog above the application.
@@ -35,7 +43,7 @@ try {
     }
     $owner.Activate()
     if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
-        [Console]::Out.Write($dialog.SelectedPath)
+        if ($isFile) { [Console]::Out.Write($dialog.FileName) } else { [Console]::Out.Write($dialog.SelectedPath) }
     }
 } finally {
     $dialog.Dispose()

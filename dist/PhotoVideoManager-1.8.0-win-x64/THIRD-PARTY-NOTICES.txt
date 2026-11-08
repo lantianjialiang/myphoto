@@ -1,0 +1,10 @@
+照片与视频管理器 1.8.0
+
+本目录包含以下第三方组件（动态链接，可自行替换同名 DLL）：
+  lib\heif.dll      libheif 1.23.7   LGPL-3.0   详见 lib\LICENSE-libheif.txt
+  lib\libde265.dll  libde265 1.0.15  LGPL-3.0   详见 lib\LICENSE-libde265.txt
+
+这两个 DLL 仅用于 HEIC/HEIF 解码，可以整体删除：程序仍可正常运行，
+只是 HEIC 文件会退化为"只索引、无缩略图"。
+
+程序本身不联网、不需要账号。扫描不修改原文件；明确选择覆盖或移动操作时会修改文件。

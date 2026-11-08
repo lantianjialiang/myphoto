@@ -152,6 +152,7 @@ const G = {
 const VIEW_TITLES = { library: '媒体库', timeline: '时间线', review: '待整理', dupes: '重复文件', similar: '相似照片', watermark: '时间水印', edit: '图像编辑', jobs: '任务中心', sources: '媒体源', settings: '设置' };
 
 function switchView(v) {
+  if (v === 'edit') { openLibraryEditor(); return; }
   S.view = v;
   $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
   $$('.view').forEach(el => el.classList.toggle('on', el.id === 'view-' + v));
@@ -175,6 +176,7 @@ async function loadState() {
   try {
     S.state = await apiGet('/api/state');
     S.settings = S.state.settings || {};
+    syncOutputFields();
     renderRail();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -570,7 +572,7 @@ function updateSelBar() {
   $('#sel-count').textContent = '已选 ' + n + ' 项';
   $('#sel-all').textContent = S.filter.total ? `全选筛选结果（${S.filter.total}）` : '全选当前筛选结果';
   // 旋转翻转面板的范围提示随选择变化
-  if (S.view === 'edit') loadEditView();
+  if (S.view === 'library' && EDIT.open) { EDIT.ids = Array.from(S.sel); loadEditView(); }
 }
 
 /* ============================ 详情 ============================ */
@@ -1246,6 +1248,7 @@ async function loadSourcesView() {
     <div class="excl" id="excl-${esc(s.id)}" hidden>
       <label>排除的子目录（每行一个，可写完整路径或目录名，例如 Temp）</label>
       <textarea data-excludes="${esc(s.id)}">${esc(((s.options && s.options.excludes) || []).join('\n'))}</textarea>
+<button class="btn sm" data-browse-exclude="${esc(s.id)}">浏览并添加排除目录…</button>
       <label style="margin-top:8px">跳过的扩展名（每行一个，例如 png）</label>
       <textarea data-exts="${esc(s.id)}" style="min-height:40px">${esc(((s.options && s.options.ext_excludes) || []).join('\n'))}</textarea>
       <div class="row-actions"><button class="btn sm primary" data-save-opts="${esc(s.id)}">保存</button></div>
@@ -1320,14 +1323,14 @@ $('#btn-scan-all').addEventListener('click', async () => {
 });
 
 let folderPickerPending = false;
-async function pickFolder(initialPath = '') {
+async function pickFolder(initialPath = '', kind = 'folder') {
   if (folderPickerPending) { toast('请先完成或取消已经打开的文件夹选择窗口'); return null; }
   folderPickerPending = true;
-  const buttons = $$('#btn-add-source, #aw-pick, #al-pick, #sl-pick, #wm-pick, #edit-pick')
+  const buttons = $$('#btn-add-source, #aw-pick, #al-pick, #sl-pick, #wm-pick, #edit-pick, #wm-font-browse, #set-output-browse, [data-browse-exclude]')
     .map(el => ({ el, disabled: el.disabled }));
   buttons.forEach(({ el }) => { el.disabled = true; });
   try {
-    const r = await api('/api/pick-folder', { method: 'POST', body: { initial_path: initialPath } });
+    const r = await api('/api/pick-folder', { method: 'POST', body: { initial_path: initialPath, kind } });
     if (r && r.path) return r.path;
     // 用户取消 → 不进入手动输入
     return null;
@@ -1385,6 +1388,8 @@ function renderSettings() {
   const s = S.settings || {};
   const st = S.state || {};
   $('#settings-body').innerHTML = `
+<div class="card"><h3>统一输出位置</h3><p>设置一次后，归档、水印、编辑、相册、幻灯片、清单和备份自动保存到各自子目录。</p><div class="field"><label>输出根目录</label><div class="row-actions"><input id="set-output-root" type="text" value="${esc(outputRoot())}" style="flex:1"><button class="btn" id="set-output-browse">浏览目录…</button></div></div><p id="set-output-summary">${esc(outputRoot())}</p><button class="btn primary" id="set-output-save">保存输出位置</button></div>
+
     <div class="card">
       <h3>归档默认值</h3>
       <p>模板变量：{YYYY} {YY} {MM} {DD} {HH} {MI} {YYYY-MM} {YYYY-MM-DD} {original_name} {name} {ext} {type} {camera}</p>
@@ -1455,6 +1460,8 @@ function renderSettings() {
       <div class="kv"><span>去重依据</span><b>完整文件 SHA-256</b></div>
     </div>`;
 
+  $('#set-output-browse').onclick = () => pickInto('#set-output-root');
+  $('#set-output-save').onclick = async () => { try { S.settings = await api('/api/settings',{method:'POST',body:{output_root:$('#set-output-root').value.trim()}}); syncOutputFields(); $('#set-output-summary').textContent = outputRoot(); toast('输出位置已保存，所有功能自动使用','ok'); } catch(e) { toast(e.message,'err'); } };
   const upd = () => { $('#tpl-preview').textContent = tplPreview($('#set-template').value); };
   $('#set-template').addEventListener('input', upd);
   upd();
@@ -1519,8 +1526,8 @@ function renderSettings() {
       toast('备份完成：' + r.path, 'ok');
     } catch (e) { toast(e.message, 'err'); }
   });
-  $('#btn-export-csv').addEventListener('click', () => download('/api/export?' + new URLSearchParams(filterParams({ format: 'csv' }))));
-  $('#btn-export-json').addEventListener('click', () => download('/api/export?' + new URLSearchParams(filterParams({ format: 'json' }))));
+  $('#btn-export-csv').onclick = async () => { try { const r=await api('/api/export/save',{method:'POST',body:filterParams({format:'csv'})});toast('清单已保存：'+r.path,'ok'); } catch(e) {toast(e.message,'err');} };
+  $('#btn-export-json').onclick = async () => { try { const r=await api('/api/export/save',{method:'POST',body:filterParams({format:'json'})});toast('清单已保存：'+r.path,'ok'); } catch(e) {toast(e.message,'err');} };
 }
 
 async function loadCapabilities() {
@@ -1590,6 +1597,7 @@ function modal(html, opts = {}) {
   const root = $('#modal-root');
   root.hidden = false;
   root.innerHTML = `<div class="modal ${opts.narrow ? 'narrow' : ''}">${html}</div>`;
+  syncOutputFields();
   root.onclick = ev => { if (ev.target === root && !opts.sticky) closeModal(); };
   return root;
 }
@@ -2978,6 +2986,7 @@ const EDIT_OPS = {
 
 /** 编辑页的状态。region/maskRect 是百分比坐标 {x,y,w,h}。 */
 const EDIT = {
+  open: false, ids: [], busy: false,
   tab: 'rotate',
   cropMode: 'aspect',
   align: { h: 'center', v: 'center' },
@@ -3003,12 +3012,7 @@ const TONE_PRESET_LIST = [
   { key: 'vivid', name: '鲜艳' },
 ];
 
-function editScope() {
-  const sel = S.sel.size;
-  return sel
-    ? { ids: Array.from(S.sel), count: sel, label: `已选 ${sel} 项` }
-    : { ids: null, count: S.filter.total || 0, label: `当前筛选 ${S.filter.total || 0} 项` };
-}
+function editScope() { return { ids: EDIT.ids.slice(), count: EDIT.ids.length, label: '已选 ' + EDIT.ids.length + ' 项照片' }; }
 
 function editSyncMode() {
   const overwrite = $('#edit-mode').value === 'overwrite';
@@ -3037,6 +3041,7 @@ function editSetTab(tab) {
 /** 进入编辑视图：刷新范围提示，并按当前选择决定按钮是否可用 */
 function loadEditView() {
   EDIT.sample = null;
+  syncOutputFields();
   editSyncMode();
   const s = editScope();
   $('#edit-scope').textContent = '范围：' + s.label;
@@ -3068,22 +3073,9 @@ function editRenderTonePresets() {
 
 /** 找一张能用来预览的照片：优先已选中的第一张。 */
 async function editPickSample() {
-  if (EDIT.sample) return EDIT.sample;
-  const ids = Array.from(S.sel);
-  let id = ids[0] || null;
-  if (!id) {
-    // 没选中就从当前筛选里取第一张
-    try {
-      const p = filterParams();
-      const qs = Object.keys(p).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(p[k])).join('&');
-      const r = await api('/api/media/ids?' + qs);
-      const list = Array.isArray(r) ? r : (r.ids || []);
-      id = list[0] || null;
-    } catch (e) { id = null; }
-  }
-  if (!id) return null;
-  EDIT.sample = { id };
-  return EDIT.sample;
+ if (EDIT.sample) return EDIT.sample;
+ for (const id of EDIT.ids) { const a = await apiGet('/api/media/' + id); if (a.media_type === 'image') { EDIT.sample = { id }; return EDIT.sample; } }
+ return null;
 }
 
 /** 当前编辑动作对应的请求参数（发给后端 preview / run）。 */
@@ -3131,6 +3123,11 @@ async function editRefreshPreview() {
   const area = $('#edit-preview-area');
   if (!area) return;
   if (EDIT.tab === 'rotate') {
+    const sample = await editPickSample();
+    if (sample) {
+      area.innerHTML = `<div class="wm-card"><div class="ph"><img src="${thumbUrl(sample,640)}" alt="当前照片"></div><div class="meta">当前照片。点击旋转或翻转即执行；默认生成副本，输出位置见设置。</div></div>`;
+      return;
+    }
     area.innerHTML = `<div class="wm-empty">
       旋转与翻转不需要预览。<br>
       批量变换不会改动拍摄时间、EXIF 里的其他信息（除了方向标记会归正）。<br>
@@ -3388,6 +3385,7 @@ async function openEditBackupList() {
 
 /** 旋转/翻转：点按钮即执行。 */
 async function runEdit(op) {
+  if (EDIT.busy) return;
   const overwrite = $('#edit-mode').value === 'overwrite';
   const out_dir = $('#edit-out').value.trim();
   if (!overwrite && !out_dir) return toast('请先选择输出目录', 'err');
@@ -3404,12 +3402,12 @@ async function runEdit(op) {
   if (s.ids) body.ids = s.ids; else body.filter = S.filter;
   const label = EDIT_OPS[op] || op;
   const doRun = async () => {
+    EDIT.busy = true;
     try {
       const r = await api('/api/edit/run', { method: 'POST', body });
       toast(`已开始${label} ${r.count} 项`, 'ok');
-      switchView('jobs');
-      loadJobs();
-    } catch (e) { toast(e.message, 'err'); }
+      await followLibraryEdit(r.job_id);
+    } catch (e) { EDIT.busy = false; toast(e.message, 'err'); }
   };
   if (overwrite) {
     confirmDialog('覆盖原图？',
@@ -3425,6 +3423,7 @@ async function runEdit(op) {
 
 /** 裁剪/调色/打码：点「应用到所选照片」执行。 */
 async function runEditAction() {
+  if (EDIT.busy) return;
   const p = editParams();
   if (!p) return toast('请选择编辑方式', 'err');
   const overwrite = $('#edit-mode').value === 'overwrite';
@@ -3444,12 +3443,12 @@ async function runEditAction() {
   if (s.ids) body.ids = s.ids; else body.filter = S.filter;
   const label = $('#edit-pane-' + EDIT.tab).querySelector('.wm-title').textContent.trim();
   const doRun = async () => {
+    EDIT.busy = true;
     try {
       const r = await api('/api/edit/run', { method: 'POST', body });
       toast(`已开始${label} ${r.count} 项`, 'ok');
-      switchView('jobs');
-      loadJobs();
-    } catch (e) { toast(e.message, 'err'); }
+      await followLibraryEdit(r.job_id);
+    } catch (e) { EDIT.busy = false; toast(e.message, 'err'); }
   };
   if (overwrite) {
     confirmDialog('覆盖原图？',
@@ -3564,6 +3563,65 @@ $('#edit-pick').addEventListener('click', async () => {
   await pickInto('#edit-out');
 });
 $('#edit-backups').addEventListener('click', openEditBackupList);
+
+function outputRoot() {
+  return S.settings.output_root || ((S.state && S.state.data_dir) || '.') + '/exports';
+}
+function outputPath(kind) { return outputRoot().replace(/[\\/]+$/, '') + '/' + kind; }
+function syncOutputFields() {
+  for (const [id, kind, pick] of [['aw-out','archive','aw-pick'],['wm-out','watermark','wm-pick'],['edit-out','edited','edit-pick'],['al-out','albums','al-pick'],['sl-out','slideshows','sl-pick']]) {
+    const input = $('#' + id); if (!input) continue;
+    input.value = outputPath(kind); input.readOnly = true; input.title = '在设置 → 统一输出位置中修改';
+    const browse = $('#' + pick); if (browse) browse.hidden = true;
+    if (!input.parentNode.querySelector('[data-output-settings]')) {
+      const button = document.createElement('button'); button.className = 'btn sm'; button.dataset.outputSettings = '1'; button.textContent = '输出设置';
+      button.onclick = () => { closeModal(); switchView('settings'); };
+      input.parentNode.appendChild(button);
+    }
+  }
+}
+
+async function openLibraryEditor(ids) {
+  ids = ids || (S.sel.size ? Array.from(S.sel) : (S.detailId ? [S.detailId] : []));
+  if (!ids.length) return toast('请先在媒体库选择照片，或打开一张照片后点击编辑');
+  const photos = [];
+  for (const id of ids) { const a = await apiGet('/api/media/' + id); if (a.media_type === 'image') photos.push(id); }
+  if (!photos.length) return toast('所选项目没有可编辑的照片','err');
+  S.sel = new Set(photos); EDIT.ids = photos; EDIT.open = true;
+  closeDetail(); switchView('library');
+  $('#library-editor').hidden = false; $('#view-library').classList.add('editing');
+  $('#edit-context').textContent = photos.length === 1 ? '当前照片' : '批量编辑 ' + photos.length + ' 张';
+  loadEditView(); layout();
+}
+function closeLibraryEditor() {
+  EDIT.open = false; EDIT.gen++; $('#library-editor').hidden = true;
+  $('#view-library').classList.remove('editing'); layout();
+}
+document.addEventListener('keydown', e => { if(e.key==='Escape' && EDIT.open && $('#modal-root').hidden) closeLibraryEditor(); });
+async function followLibraryEdit(jobId) {
+  EDIT.busy = true; $('#edit-context').textContent = '正在编辑…';
+  try {
+    for (let i = 0; i < 600; i++) {
+      const job = await apiGet('/api/jobs/' + jobId);
+      if (!['running','queued','cancelling'].includes(job.status)) {
+        toast(job.message || '编辑完成', job.failed ? 'err' : 'ok');
+        await loadState(); await loadMedia(false);
+        if (EDIT.open) loadEditView(); return;
+      }
+      await new Promise(resolve => setTimeout(resolve,400));
+    }
+    toast('任务仍在后台运行，可到任务中心查看');
+  } finally { EDIT.busy = false; $('#edit-context').textContent = '已选 ' + EDIT.ids.length + ' 张照片'; loadJobs(); }
+}
+$('#view-library').appendChild($('#library-editor'));
+$('#sel-edit').onclick = () => openLibraryEditor().catch(e=>toast(e.message,'err'));
+$('#d-edit').onclick = () => openLibraryEditor(S.detailId ? [S.detailId] : []).catch(e=>toast(e.message,'err'));
+$('#edit-close').onclick = closeLibraryEditor;
+$('#wm-font-browse').onclick = async () => {
+  const input = $('#wm-font-path');
+  const path = await pickFolder(input.value,'font');
+  if (path && input.isConnected) { input.value=path; wmReadUI(); await wmValidateFont(); wmSchedulePreview(); }
+};
 $('#f-watermark').addEventListener('change', e => setFilter('watermarked', e.target.value));
 $('#sel-watermark').addEventListener('click', () => {
   $('#wm-scope-mode').value = 'selected'; switchView('watermark');
@@ -3587,3 +3645,5 @@ $('#sel-watermark-mark').addEventListener('click', () => {
   const save = async marked => { try { await api('/api/watermark/mark', { method: 'POST', body: { ids, marked } }); closeModal(); await loadMedia(false); toast('水印状态已更新'); } catch(e) { toast(e.message,'err'); } };
   $('#wm-mark-yes').onclick = () => save(true); $('#wm-mark-no').onclick = () => save(false);
 });
+
+$('#src-list').addEventListener('click',async e=>{const id=e.target.dataset.browseExclude;if(!id)return;const input=$('[data-excludes="'+CSS.escape(id)+'"]');const path=await pickFolder();if(path&&input&&input.isConnected)input.value=[input.value.trim(),path].filter(Boolean).join('\n');});
