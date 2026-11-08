@@ -334,6 +334,8 @@ fn route(
         ["api", "media", id, "tags"] if m == "POST" => Some(api_set_tags(app, req, id)),
         ["api", "media", id, "livepair"] if m == "POST" => Some(api_set_livepair(app, req, id)),
         ["api", "media", id, "reveal"] if m == "POST" => Some(api_reveal(app, req, id)),
+        ["api", "reveal"] if m == "POST" => Some(api_reveal(app, req, "")),
+        ["api", "files", id, "mark"] if m == "POST" => Some(api_file_mark(app, req, id)),
         ["api", "thumb", id] => Some(api_thumb(app, id, params)),
         ["api", "thumb", id, "poster"] if m == "POST" => Some(api_poster(app, req, id)),
         ["api", "file", id] => Some(api_file(app, req, id)),
@@ -368,7 +370,7 @@ fn route(
         ["api", "watermark", "mark"] if m == "POST" => Some(api_wm_mark(app,req)),
         ["api", "watermark", "rotation"] if m == "POST" => Some(api_wm_rotation(app,req)),
         ["api", "album", "run"] if m == "POST" => Some(api_album_run(app, req)),
-        ["api", "image", id] if m == "GET" => Some(api_image(app, id)),
+        ["api", "image", id] if m == "GET" => Some(api_image(app, id, params)),
         ["api", "album", "themes"] => Some(ok(album::theme_list())),
         ["api", "slideshow", "run"] if m == "POST" => Some(api_slideshow_run(app, req)),
         ["api", "slideshow", "formats"] => Some(ok(crate::slideshow::formats())),
@@ -451,7 +453,7 @@ fn api_state(app: &Shared) -> Response<Body> {
     let sources = count("SELECT count(*) FROM sources");
     let dup_groups = count(
         "SELECT count(*) FROM (SELECT sha256 FROM media_files WHERE sha256 IS NOT NULL
-         GROUP BY sha256 HAVING count(*)>1)",
+         GROUP BY sha256 HAVING count(DISTINCT lower(absolute_path))>1)",
     );
     let free = util::free_space(&app.paths.data_dir).unwrap_or(0);
     let running = app.jobs.running().len();
@@ -469,6 +471,8 @@ fn api_state(app: &Shared) -> Response<Body> {
         "result": {
             "version": app.version,
             "data_dir": app.paths.data_dir.to_string_lossy(),
+            "program_dir": app.paths.root_dir().to_string_lossy(),
+            "output_root": output_root(app).to_string_lossy(),
             "db_path": app.paths.db_path.to_string_lossy(),
             "assets": assets_total, "images": images, "videos": videos,
             "unknown_date": unknown, "needs_review": review,
@@ -919,6 +923,17 @@ fn api_mark(app: &Shared, req: &mut Request, id: &str) -> Response<Body> {
     ok(json!({"marked": marked}))
 }
 
+fn api_file_mark(app: &Shared, req: &mut Request, id: &str) -> Response<Body> {
+    let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
+    let marked = body.get("marked").and_then(Value::as_bool).unwrap_or(false);
+    let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
+    match conn.execute("UPDATE media_files SET marked=?2 WHERE id=?1",params![id,marked as i64]) {
+        Ok(1) => ok(json!({"marked":marked})),
+        Ok(_) => json_err(404,"文件不存在"),
+        Err(e) => json_err(500,&e.to_string()),
+    }
+}
+
 /* ---------------- 标签 / 星标 / 时间偏移 ---------------- */
 
 fn api_tags(app: &Shared) -> Response<Body> {
@@ -1252,7 +1267,7 @@ fn api_thumb(app: &Shared, id: &str, params: &std::collections::HashMap<String, 
         }
     }
     let src = PathBuf::from(&file.absolute_path);
-    let bytes = match media::thumbnail(&src, px) {
+    let bytes = match crate::orientation::load(&conn2,id,&src).and_then(|img|watermark::encode(&img.thumbnail(px,px).to_rgba8(),"jpg",88)) {
         Ok(b) => b,
         Err(e) => return json_err(422, &e),
     };
@@ -1309,12 +1324,15 @@ fn api_poster(app: &Shared, req: &mut Request, id: &str) -> Response<Body> {
     ok(json!({"saved": true}))
 }
 
-fn api_image(app: &Shared, id: &str) -> Response<Body> {
+fn api_image(app: &Shared, id: &str, query: &std::collections::HashMap<String,String>) -> Response<Body> {
     let Ok(conn) = open_db(app) else { return json_err(500,"数据库不可用") };
-    let row: Option<(String,String)> = conn.query_row("SELECT absolute_path,ext FROM media_files WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?))).optional().unwrap_or(None);
-    let Some((path,ext)) = row else { return json_err(404,"找不到这个文件副本") };
+    let row: Option<(String,String,String)> = conn.query_row("SELECT absolute_path,ext,asset_id FROM media_files WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().unwrap_or(None);
+    let Some((path,ext,asset)) = row else { return json_err(404,"找不到这个文件副本") };
     if util::media_kind(&ext) != Some("image") { return json_err(415,"仅支持图片预览") }
-    match media::thumbnail(Path::new(&path),2048) {
+    let bytes=if query.get("full").map(String::as_str)==Some("1") {
+        crate::orientation::load(&conn,&asset,Path::new(&path)).and_then(|img|watermark::encode(&img.to_rgba8(),"jpg",95))
+    } else { crate::orientation::load(&conn,&asset,Path::new(&path)).and_then(|img|watermark::encode(&img.thumbnail(2048,2048).to_rgba8(),"jpg",88)) };
+    match bytes {
         Ok(bytes) => respond_bytes(200,bytes,"image/jpeg",vec![("Cache-Control".into(),"no-store".into())]),
         Err(e) => json_err(422,&e),
     }
@@ -1498,7 +1516,7 @@ fn api_plan(app: &Shared, req: &mut Request) -> Response<Body> {
             }
         }
     }
-    let out_dir = output_dir(app, &body, "archive");
+    let out_dir = match output_dir(app, &body, "archive") { Ok(p) => p, Err(e) => return json_err(400, &e) };
     let template = body.get("template").and_then(|v| v.as_str()).map(|s| s.to_string());
     let conflict = body.get("conflict").and_then(|v| v.as_str()).map(|s| s.to_string());
     let mode = body.get("mode").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -1675,13 +1693,15 @@ fn api_settings_get(app: &Shared) -> Response<Body> {
 
 fn output_root(app: &Shared) -> PathBuf {
     open_db(app).ok().and_then(|conn|db::get_setting(&conn,"output_root"))
-        .filter(|s|!s.trim().is_empty()).map(PathBuf::from)
-        .unwrap_or_else(||app.paths.data_dir.join("exports"))
+        .and_then(|s|crate::portable::output_path(&app.paths.root_dir(),&s).ok())
+        .unwrap_or_else(||app.paths.root_dir().join("exports"))
 }
 
-fn output_dir(app: &Shared, body: &Value, kind: &str) -> String {
-    body.get("out_dir").and_then(Value::as_str).filter(|s|!s.trim().is_empty())
-        .map(str::to_owned).unwrap_or_else(||output_root(app).join(kind).to_string_lossy().into_owned())
+fn output_dir(app: &Shared, body: &Value, kind: &str) -> Result<String,String> {
+    let default=output_root(app).join(kind);
+    let input=body.get("out_dir").and_then(Value::as_str).filter(|s|!s.trim().is_empty()).map(str::to_owned)
+        .unwrap_or_else(||default.to_string_lossy().into_owned());
+    crate::portable::output_path(&app.paths.root_dir(), &input).map(|p|p.to_string_lossy().into_owned())
 }
 
 fn api_settings_set(app: &Shared, req: &mut Request) -> Response<Body> {
@@ -1689,11 +1709,13 @@ fn api_settings_set(app: &Shared, req: &mut Request) -> Response<Body> {
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     if let Some(obj) = body.as_object() {
         if let Some(root)=obj.get("output_root").and_then(Value::as_str) {
-            if root.trim().is_empty() || !Path::new(root).is_absolute() { return json_err(400,"请选择输出根目录的完整路径") }
+            let root=match crate::portable::output_path(&app.paths.root_dir(),root) {Ok(p)=>p,Err(e)=>return json_err(400,&e)};
             if let Err(e)=std::fs::create_dir_all(root) { return json_err(400,&format!("无法使用输出目录：{e}")) }
         }
         for (k, v) in obj {
+            if k == "portable_root" { continue; }
             let value = match v {
+                Value::String(s) if k == "output_root" => crate::portable::output_path(&app.paths.root_dir(),s).unwrap().to_string_lossy().into_owned(),
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
@@ -1930,6 +1952,10 @@ fn api_trash(app: &Shared, req: &mut Request, execute: bool) -> Response<Body> {
     }
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     if !execute {
+        if let Some(files) = body.get("file_ids").and_then(Value::as_array) {
+            let ids: Vec<String> = files.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+            return match crate::trash::plan_files(&conn,&ids) {Ok(v)=>ok(v),Err(e)=>json_err(400,&e)};
+        }
         let ids: Vec<String> = body.get("ids").and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
             .unwrap_or_default();
@@ -1968,7 +1994,7 @@ fn api_edit_run(app: &Shared, req: &mut Request) -> Response<Body> {
     };
     let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("overwrite").to_string();
     let overwrite = mode.eq_ignore_ascii_case("overwrite");
-    let out_dir = output_dir(app, &body, "edited");
+    let out_dir = match output_dir(app, &body, "edited") { Ok(p) => p, Err(e) => return json_err(400, &e) };
     if out_dir.is_empty() && !overwrite {
         return json_err(400, "请先选择输出目录");
     }
@@ -2115,7 +2141,7 @@ fn api_wm_run(app: &Shared, req: &mut Request) -> Response<Body> {
         .unwrap_or("copy")
         .to_string();
     let overwrite = mode.eq_ignore_ascii_case("overwrite");
-    let out_dir = output_dir(app, &body, "watermark");
+    let out_dir = match output_dir(app, &body, "watermark") { Ok(p) => p, Err(e) => return json_err(400, &e) };
     if out_dir.is_empty() && !overwrite {
         return json_err(400, "请先选择输出目录");
     }
@@ -2163,7 +2189,7 @@ fn api_wm_run(app: &Shared, req: &mut Request) -> Response<Body> {
 
 fn api_album_run(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
-    let out_dir = output_dir(app, &body, "albums");
+    let out_dir = match output_dir(app, &body, "albums") { Ok(p) => p, Err(e) => return json_err(400, &e) };
     if out_dir.is_empty() {
         return json_err(400, "请先选择输出目录");
     }
@@ -2223,7 +2249,7 @@ fn api_album_run(app: &Shared, req: &mut Request) -> Response<Body> {
 
 fn api_slideshow_run(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
-    let out_dir = output_dir(app, &body, "slideshows");
+    let out_dir = match output_dir(app, &body, "slideshows") { Ok(p) => p, Err(e) => return json_err(400, &e) };
     if out_dir.is_empty() {
         return json_err(400, "请先选择输出目录");
     }

@@ -188,7 +188,7 @@ function renderRail() {
   $('#rail-stats').innerHTML = `
     <div class="srow"><span>照片</span><b>${s.images || 0}</b></div>
     <div class="srow"><span>视频</span><b>${s.videos || 0}</b></div>
-    <div class="srow"><span>★ 星标</span><b>${s.starred || 0}</b></div>
+    <div class="srow"><span>♡ 收藏</span><b>${s.favorites || 0}</b></div>
     <div class="srow"><span>实况照片</span><b>${s.live_pairs || 0}</b></div>
     <div class="srow"><span>日期待确认</span><b>${s.needs_review || 0}</b></div>
     <div class="srow"><span>占用空间</span><b>${fmtSize(s.bytes)}</b></div>`;
@@ -288,6 +288,8 @@ async function loadMedia(reset) {
     if (gen !== S.gen) return;
     G.total = r.total;
     S.filter.total = r.total;
+    const active=Object.keys(S.filter).filter(k=>k!=='total' && S.filter[k]!==undefined && S.filter[k]!==false && S.filter[k]!=='').length;
+    $('#filter-count').textContent=active ? ' · '+active : '';
     r.items.forEach((it, i) => G.items.set(i, it));
     G.pages.set(0, 'done');
     $('#lib-empty').hidden = G.total > 0;
@@ -369,8 +371,10 @@ function createNode() {
     d.addEventListener('click', ev => {
       const it = G.items.get(Number(d.dataset.idx));
       if (!it) return;
+      const rotate=ev.target.closest('[data-quick-rotate]');
+      if(rotate){quickRotate([it.id],rotate.dataset.quickRotate);return;}
       if (ev.target.classList.contains('check') || ev.ctrlKey || ev.metaKey) toggleSel(it.id);
-      else openDetail(it.id);
+      else openDetail(it.id, true);
     });
   } else {
     d.className = 'row';
@@ -379,7 +383,7 @@ function createNode() {
     d.addEventListener('click', ev => {
       const it = G.items.get(Number(d.dataset.idx));
       if (!it) return;
-      if (ev.ctrlKey || ev.metaKey) toggleSel(it.id); else openDetail(it.id);
+      if (ev.ctrlKey || ev.metaKey) toggleSel(it.id); else openDetail(it.id, true);
     });
   }
   return d;
@@ -451,11 +455,11 @@ function updateNode(node, i, force) {
       if (it.needs_review) badges.push('<span class="b warn">待确认</span>');
       if (it.dup) badges.push('<span class="b">重复</span>');
       if (it.availability === 'missing') badges.push('<span class="b">源缺失</span>');
-      if (it.star) badges.push('<span class="b star">★</span>');
+      if (it.favorite) badges.push('<span class="b star">♥</span>');
       if (it.live) badges.push('<span class="b live">LIVE</span>');
-      if (it.marked) badges.push('<span class="b">已标记</span>');
       const tagLine = (it.tags || []).slice(0, 2).map(t => `<span class="b tag">${esc(t)}</span>`).join('');
       thumb.innerHTML = inner +
+        (!isVideo ? `<div class="tile-quick"><button class="btn sm" data-quick-rotate="rot270" title="左旋当前照片">⟲</button><button class="btn sm" data-quick-rotate="rot90" title="右旋当前照片">⟳</button></div>` : '') +
         `<div class="badges"><div style="display:flex;gap:4px;flex-wrap:wrap">${badges.join('')}</div>
            <div>${isVideo ? '<span class="b vid">视频</span>' : ''}</div></div>
          <div class="check">${sel ? '✓' : ''}</div>
@@ -576,7 +580,7 @@ function updateSelBar() {
 }
 
 /* ============================ 详情 ============================ */
-async function openDetail(id) {
+async function openDetail(id, fullscreen = false) {
   S.detailId = id;
   $('.app').classList.add('with-detail');
   $('#detail').hidden = false;
@@ -586,6 +590,7 @@ async function openDetail(id) {
     const a = await apiGet('/api/media/' + id);
     if (S.detailId !== id) return;
     renderDetail(a);
+    if (fullscreen) openMediaViewer(a);
   } catch (e) {
     $('#d-body').innerHTML = `<div class="skeleton">${esc(e.message)}</div>`;
   }
@@ -603,6 +608,7 @@ function renderDetail(a) {
   const isVideo = a.media_type === 'video';
   $('#d-delete').hidden = isVideo;
   const ext = (primary.ext || '').toLowerCase();
+  $('#d-fullscreen').onclick = () => openMediaViewer(a);
   const decodable = canPreviewImage(ext);
   const heifPreview = HEIF_EXT.test(ext) && heifReady();
   $('#d-title').textContent = primary.file_name || '媒体详情';
@@ -653,7 +659,6 @@ function renderDetail(a) {
       <div class="line"><div class="k">GPS</div><div class="v">${esc(gps)}</div></div>
       <div class="line"><div class="k">SHA-256</div><div class="v mono">${esc(primary.sha256 || '未计算')}</div></div>
       <div class="line"><div class="k">标记</div><div class="v">
-        <button class="btn sm" data-act="star">${a.star ? '★ 已星标' : '☆ 星标'}</button>
         <button class="btn sm" data-act="fav">${a.favorite ? '已收藏' : '收藏'}</button>
       </div></div>
 
@@ -713,10 +718,10 @@ function renderDetail(a) {
 
       <div class="row-actions">
         <button class="btn sm" data-act="refresh">重新读取元数据</button>
-        <button class="btn sm" data-act="mark">${primary.marked ? '取消标记' : '标记'}</button>
         <button class="btn sm" data-act="archive-one">加入归档任务</button>
       </div>
     </div>`;
+  installDatePickers($('#d-body'));
 
   const v = $('#d-video');
   if (v) {
@@ -732,6 +737,7 @@ function renderDetail(a) {
   }
 
   $('#d-body').onclick = async ev => {
+    if (ev.target.id === 'd-img') { openMediaViewer(a, ev.target.dataset.fileId || primary.id); return; }
     const t = ev.target.closest('button');
     const un = ev.target.closest('[data-untag]');
     if (un) {
@@ -766,6 +772,7 @@ function renderDetail(a) {
     if (t.dataset.preview) {
       const img = $('#d-img');
       if (!img) return;
+      img.dataset.fileId = t.dataset.preview;
       const fext = (t.dataset.ext || '').toLowerCase();
       if (HEIF_EXT.test(fext) || /^(tif|tiff)$/.test(fext) || !DECODABLE.test(fext)) {
         // 浏览器打不开的格式（HEIC/视频等）退回后端缩略图，避免只看到一片空白
@@ -907,7 +914,7 @@ function updateReviewBar() {
 }
 $('#review-list').addEventListener('click', async ev => {
   const t = ev.target;
-  if (t.dataset.open) { openDetail(t.dataset.open); return; }
+  if (t.dataset.open) { openDetail(t.dataset.open, true); return; }
   if (t.dataset.use) {
     try {
       await api('/api/media/' + t.dataset.id + '/date', { method: 'POST', body: { date: t.dataset.use } });
@@ -972,7 +979,8 @@ async function loadDupes() {
         <span class="m">${fmtSize(f.size_bytes)}</span>
         <span class="m">${esc((f.taken_at || '').slice(0, 10))}</span>
         <button class="btn sm" data-reveal-file="${esc(f.file_id)}">打开位置</button>
-        <button class="btn sm" data-dup-mark="${esc(f.asset_id)}" data-marked="${f.marked ? 1 : 0}">${f.marked ? '取消标记' : '标记保留'}</button>
+        <button class="btn sm" data-dup-mark="${esc(f.file_id)}" data-marked="${f.marked ? 1 : 0}">${f.marked ? '取消保留' : '保留此副本'}</button>
+        ${f.media_type === 'image' ? `<button class="btn sm danger" data-dup-delete="${esc(f.file_id)}" data-asset-id="${esc(f.asset_id)}" ${f.availability !== 'online' ? 'disabled' : ''}>删除此副本…</button>` : ''}
       </div>`).join('')}
     </div>`).join('');
   } catch (e) { box.innerHTML = `<div class="skeleton">${esc(e.message)}</div>`; }
@@ -985,9 +993,11 @@ $('#dup-list').addEventListener('click', async ev => {
   } else if (t.dataset.dupMark) {
     const marked = t.dataset.marked !== '1';
     try {
-      await api('/api/media/' + t.dataset.dupMark + '/mark', { method: 'POST', body: { marked } });
+      await api('/api/files/' + t.dataset.dupMark + '/mark', { method: 'POST', body: { marked } });
       loadDupes(); loadState();
     } catch (e) { toast(e.message, 'err'); }
+  } else if (t.dataset.dupDelete) {
+    openDeletePhotos([t.dataset.assetId], [t.dataset.dupDelete]).catch(e=>toast(e.message,'err'));
   }
 });
 
@@ -1013,7 +1023,7 @@ async function loadSimilar() {
         <b>${g.count} 张相似</b>
         <span>最大差异 ${g.max_distance}/64</span>
         <span class="sp"></span>
-        <button class="btn sm" data-sim-star="${gi}">全部星标</button>
+        <button class="btn sm" data-sim-star="${gi}">全部收藏</button>
       </div>
       <div class="sim-items">
         ${g.items.map(it => `<div class="sim-item" data-open="${esc(it.id)}">
@@ -1042,14 +1052,14 @@ $('#similar-list').addEventListener('click', async ev => {
     const g = groups[Number(star.dataset.simStar)];
     if (!g) return;
     try {
-      await api('/api/media/batch-flags', { method: 'POST', body: { ids: g.items.map(i => i.id), star: true } });
-      toast(`已星标 ${g.items.length} 张`, 'ok');
+      await api('/api/media/batch-flags', { method: 'POST', body: { ids: g.items.map(i => i.id), favorite: true } });
+      toast(`已收藏 ${g.items.length} 张`, 'ok');
       loadSimilar(); loadState();
     } catch (e) { toast(e.message, 'err'); }
     return;
   }
   const item = ev.target.closest('[data-open]');
-  if (item) openDetail(item.dataset.open);
+  if (item) openDetail(item.dataset.open, true);
 });
 $('#btn-sim-hash').addEventListener('click', async () => {
   try {
@@ -1389,7 +1399,7 @@ function renderSettings() {
   const s = S.settings || {};
   const st = S.state || {};
   $('#settings-body').innerHTML = `
-<div class="card"><h3>统一输出位置</h3><p>设置一次后，归档、水印、编辑、相册、幻灯片、清单和备份自动保存到各自子目录。</p><div class="field"><label>输出根目录</label><div class="row-actions"><input id="set-output-root" type="text" value="${esc(outputRoot())}" style="flex:1"><button class="btn" id="set-output-browse">浏览目录…</button></div></div><p id="set-output-summary">${esc(outputRoot())}</p><button class="btn primary" id="set-output-save">保存输出位置</button></div>
+<div class="card"><h3>便携存储与统一输出</h3><p>数据库、设置和预览缓存保存在程序目录的 data 下；所有输出和原件备份保存在 exports 的各自子目录。退出程序后，复制整个程序文件夹即可迁移。外部媒体源仍从原位置读取。</p><div class="kv"><span>程序目录</span><b class="mono">${esc(st.program_dir || '')}</b></div><div class="field"><label>输出目录（只能选择程序目录内的文件夹，也可填写 exports 等相对路径）</label><div class="row-actions"><input id="set-output-root" type="text" value="${esc(outputRoot())}" style="flex:1"><button class="btn" id="set-output-browse">浏览目录…</button></div></div><p id="set-output-summary">${esc(outputRoot())}</p><button class="btn primary" id="set-output-save">保存输出位置</button></div>
 
     <div class="card">
       <h3>归档默认值</h3>
@@ -1599,6 +1609,7 @@ function modal(html, opts = {}) {
   root.hidden = false;
   root.innerHTML = `<div class="modal ${opts.narrow ? 'narrow' : ''}">${html}</div>`;
   syncOutputFields();
+  installDatePickers(root);
   root.onclick = ev => { if (ev.target === root && !opts.sticky) closeModal(); };
   return root;
 }
@@ -1776,8 +1787,6 @@ function bindChip(btn, key) {
 }
 bindChip($('#f-review'), 'needs_review');
 bindChip($('#f-dup'), 'dup');
-bindChip($('#f-marked'), 'marked');
-bindChip($('#f-star'), 'star');
 bindChip($('#f-fav'), 'favorite');
 bindChip($('#f-live'), 'live');
 $('#f-tag').addEventListener('change', e => setFilter('tag', e.target.value));
@@ -1856,21 +1865,13 @@ $('#sel-date').addEventListener('click', () => {
     } catch (e) { toast(e.message, 'err'); }
   };
 });
-$('#sel-mark').addEventListener('click', async () => {
-  if (!S.sel.size) return;
-  if (S.sel.size > 300) return toast('一次最多标记 300 项', 'err');
-  const ids = Array.from(S.sel);
-  try {
-    for (const id of ids) await api('/api/media/' + id + '/mark', { method: 'POST', body: { marked: true } });
-    toast(`已标记 ${ids.length} 项`, 'ok');
-    loadMedia(false);
-  } catch (e) { toast(e.message, 'err'); }
-});
-$('#sel-star').addEventListener('click', async () => {
+$('#sel-favorite').addEventListener('click', async () => {
   if (!S.sel.size) return;
   try {
-    const r = await api('/api/media/batch-flags', { method: 'POST', body: { ids: Array.from(S.sel), star: true } });
-    toast(`已星标 ${r.updated} 项`, 'ok');
+    const ids=Array.from(S.sel), photos=await Promise.all(ids.map(id=>apiGet('/api/media/'+id)));
+    const favorite=!photos.every(a=>a.favorite);
+    const r = await api('/api/media/batch-flags', { method: 'POST', body: { ids, favorite } });
+    toast(`${favorite ? '已收藏' : '已取消收藏'} ${r.updated} 项`, 'ok');
     refreshAfterChange();
   } catch (e) { toast(e.message, 'err'); }
 });
@@ -1960,13 +1961,8 @@ document.addEventListener('click', e => {
   if (b) switchView(b.dataset.goto);
 });
 $('#d-close').addEventListener('click', closeDetail);
-$('#d-rotate').addEventListener('click', () => {
-  const img = $('#d-img');
-  if (!img) return;
-  const m = img.style.transform.match(/rotate\((-?\d+)deg\)/);
-  const cur = m ? Number(m[1]) : 0;
-  img.style.transform = `rotate(${cur + 90}deg)`;
-});
+$('#d-left').onclick=()=>quickRotate(S.detailId?[S.detailId]:[],'rot270');
+$('#d-right').onclick=()=>quickRotate(S.detailId?[S.detailId]:[],'rot90');
 $('#review-mode').addEventListener('click', e => {
   const b = e.target.closest('button[data-mode]');
   if (!b) return;
@@ -1985,6 +1981,7 @@ $('#jobs-tab').addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    if (!$('#photo-viewer').hidden) return;
     if (!$('#modal-root').hidden) closeModal();
     else if (S.detailId) closeDetail();
   }
@@ -2180,7 +2177,7 @@ $('#tl-today').addEventListener('click', () => {
 });
 $('#tl-body').addEventListener('click', e => {
   const el = e.target.closest('.tl-item[data-id]');
-  if (el) openDetail(el.dataset.id);
+  if (el) openDetail(el.dataset.id, true);
 });
 window.addEventListener('resize', debounce(() => { if (S.view === 'timeline') tlRender(); }, 220));
 
@@ -2585,8 +2582,9 @@ async function wmRefreshPreviews() {
       if (!card) return;
       const isFree = (cfg.position || '') === 'free';
       card.innerHTML = `
-        <div class="ph"><img src="${r.image}" alt="">${isFree && r.block ? wmFreeBox(r) : ''}</div>
+        <div class="ph"><img src="${r.image}" alt="水印效果，点击全屏查看" class="wm-preview-open" ${!isFree ? `data-wm-full="${esc(s.item.id)}"` : ''}>${isFree && r.block ? wmFreeBox(r) : ''}</div>
         <div class="meta">
+          <button class="btn sm" data-wm-full="${esc(s.item.id)}">全屏查看水印效果</button>
           <span>${esc(s.tag)} ${esc(r.file_name || '')}</span><span><b>${r.width}×${r.height}</b></span>
           ${!r.watermarked ? `<label>仅此照片方向（预览与输出）<select data-wm-rotation="${esc(s.item.id)}">${[0,90,180,270].map(deg => `<option value="${deg}" ${deg === Number(r.correction || 0) ? 'selected' : ''}>${deg === 0 ? '按 EXIF' : deg + '°'}</option>`).join('')}</select></label>` : ''}
           <span>字号 <b>${r.font_px}px</b></span>
@@ -3565,7 +3563,7 @@ $('#edit-pick').addEventListener('click', async () => {
 $('#edit-backups').addEventListener('click', openEditBackupList);
 
 function outputRoot() {
-  return S.settings.output_root || ((S.state && S.state.data_dir) || '.') + '/exports';
+  return S.settings.output_root || (S.state && S.state.output_root) || ((S.state && S.state.program_dir) || '.') + '/exports';
 }
 function outputPath(kind) { return outputRoot().replace(/[\\/]+$/, '') + '/' + kind; }
 function syncOutputFields() {
@@ -3605,13 +3603,13 @@ async function editFileIds(ids) {
     return a.files[0].id;
   }));
 }
-async function followLibraryEdit(jobId, fileIds = []) {
+async function followLibraryEdit(jobId, fileIds = [], quiet = false) {
   EDIT.busy = true; $('#edit-context').textContent = '正在编辑…';
   try {
     for (let i = 0; i < 600; i++) {
       const job = await apiGet('/api/jobs/' + jobId);
       if (!['running','queued','cancelling'].includes(job.status)) {
-        toast(job.message || '编辑完成', job.failed ? 'err' : 'ok');
+        toast(quiet && !job.failed ? (job.message.includes('HEIC') ? '已更新方向，HEIC 原件保留' : '旋转完成，已自动备份') : (job.message || '编辑完成'), job.failed ? 'err' : 'ok');
         if (fileIds.length) {
           const current = await Promise.all(fileIds.map(id=>apiGet('/api/media/by-file/'+id)));
           EDIT.ids = Array.from(new Set(current.map(a=>a.id))); S.sel = new Set(EDIT.ids);
@@ -3630,17 +3628,17 @@ $('#d-edit').onclick = () => openLibraryEditor(S.detailId ? [S.detailId] : []).c
 $('#edit-close').onclick = closeLibraryEditor;
 
 let deletingPhotos = false;
-async function openDeletePhotos(ids) {
+async function openDeletePhotos(ids, fileIds = null) {
   if (deletingPhotos || EDIT.busy) return toast('请等待当前照片操作完成');
   ids = Array.from(new Set(ids));
   if (!ids.length) return toast('请先选择要删除的照片');
   // 删除范围是打开确认框时的选择快照；不允许退回到整个筛选结果。
-  const plan = await api('/api/media/trash/plan', {method:'POST', body:{ids}});
+  const plan = await api('/api/media/trash/plan', {method:'POST', body:fileIds ? {file_ids:fileIds} : {ids}});
   modal(`<div class="modal-head"><h3>删除照片</h3></div>
     <div class="modal-body">
       <p>将以下 <b id="delete-count">${plan.count}</b> 个文件移到 Windows 回收站，并更新媒体库。</p>
-      <p class="tplhint">默认只处理每张照片当前显示的文件。相同照片的其他副本、实况视频及编辑备份会保留。</p>
-      <label><input type="checkbox" id="delete-copies"> 同时删除所选照片的全部重复副本</label>
+      <p class="tplhint">${fileIds ? '只删除下方列出的具体副本，其他副本保留。' : '默认只处理每张照片当前显示的文件。相同照片的其他副本、实况视频及编辑备份会保留。'}</p>
+      <label ${fileIds ? 'hidden' : ''}><input type="checkbox" id="delete-copies"> 同时删除所选照片的全部重复副本</label>
       <div id="delete-paths" style="max-height:240px;overflow:auto;overflow-wrap:anywhere;margin-top:14px"></div>
       <p id="delete-error" role="alert"></p>
       <p class="tplhint">误删后可在 Windows 回收站还原，再扫描原媒体源。</p>
@@ -3677,6 +3675,7 @@ async function openDeletePhotos(ids) {
           ids.forEach(id=>S.sel.delete(id));
           toast(job.message || '删除完成', job.failed ? 'err' : 'ok');
           await loadState(); await loadFacets(); await loadMedia(false); loadJobs();
+          if (S.view === 'dupes') await loadDupes();
           return;
         }
         await new Promise(resolve=>setTimeout(resolve,500));
@@ -3718,3 +3717,110 @@ $('#sel-watermark-mark').addEventListener('click', () => {
 });
 
 $('#src-list').addEventListener('click',async e=>{const id=e.target.dataset.browseExclude;if(!id)return;const input=$('[data-excludes="'+CSS.escape(id)+'"]');const path=await pickFolder();if(path&&input&&input.isConnected)input.value=[input.value.trim(),path].filter(Boolean).join('\n');});
+
+/* ============================ 全屏照片与水印效果 ============================ */
+const PV = { gen:0, scale:1, fit:true, focus:null, source:null };
+function viewerOpen(title, src, video = false) {
+  const root=$('#photo-viewer');
+  PV.gen++; PV.focus=document.activeElement; PV.fit=true; PV.source=src;
+  root.hidden=false; $('#viewer-title').textContent=title; $('#viewer-status').textContent='正在加载…';
+  $('#viewer-info').hidden=false;
+  const media=document.createElement(video ? 'video' : 'img');
+  if (video) { media.controls=true; media.preload='metadata'; }
+  else { media.alt=title; media.onload=()=>{viewerResize();$('#viewer-status').textContent='滚轮缩放，放大后可滚动查看细节；Esc 返回';}; }
+  media.onerror=()=>{$('#viewer-status').textContent='预览加载失败，请检查文件是否在线或解码器是否可用';};
+  media.src=src; $('#viewer-canvas').replaceChildren(media); $('#viewer-stage').focus();
+  return PV.gen;
+}
+function viewerResize() {
+  const img=$('#viewer-canvas img'), stage=$('#viewer-stage');
+  if (!img || !img.naturalWidth || !stage.clientWidth) return;
+  if(PV.fit) PV.scale=Math.min(1, stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
+  PV.scale=Math.max(.02,Math.min(8,PV.scale));
+  img.style.width=Math.round(img.naturalWidth*PV.scale)+'px'; img.style.height='auto';
+  $('#viewer-scale').textContent=Math.round(PV.scale*100)+'%';
+}
+function viewerZoom(scale) { PV.fit=false;PV.scale=scale;viewerResize(); }
+function closeViewer() {
+  PV.gen++; $('#photo-viewer').hidden=true; $('#viewer-canvas').replaceChildren();
+  if(document.fullscreenElement===$('#photo-viewer')) document.exitFullscreen().catch(()=>{});
+  if(PV.focus && PV.focus.isConnected) PV.focus.focus();
+}
+function openMediaViewer(a, fileId) {
+  const file=(a.files || []).find(f=>f.id===fileId) || (a.files || [])[0];
+  if(!file) return toast('没有可预览的文件','err');
+  viewerOpen(file.file_name || '照片预览', a.media_type==='video' ? fileUrl(file.id) : imageUrl(file.id)+'&full=1', a.media_type==='video');
+}
+async function openWatermarkViewer(id) {
+  const cfg=JSON.parse(JSON.stringify(wmReadUI()));
+  const card=$('[data-wm-full="'+CSS.escape(id)+'"]')?.closest('.wm-card');
+  const low=card?.querySelector('img')?.src || '';
+  const gen=viewerOpen('水印效果 · 正在加载原尺寸',low);
+  $('#viewer-info').hidden=true; $('#viewer-status').textContent='正在渲染原尺寸水印效果…';
+  try {
+    const r=await api('/api/watermark/preview',{method:'POST',body:{id,config:cfg,max_side:0}});
+    if(gen!==PV.gen || $('#photo-viewer').hidden) return;
+    $('#viewer-title').textContent='水印效果 · '+(r.file_name || '')+' · '+r.width+'×'+r.height;
+    const img=$('#viewer-canvas img'); img.src=r.image;
+    img.onload=()=>{viewerResize();$('#viewer-status').textContent=(r.warning || '原尺寸渲染，点击 100% 检查水印细节；Esc 返回调整');};
+  } catch(e) {if(gen===PV.gen) $('#viewer-status').textContent=e.message;}
+}
+$('#viewer-close').onclick=closeViewer;
+$('#viewer-info').onclick=closeViewer;
+$('#viewer-fit').onclick=()=>{PV.fit=true;viewerResize();};
+$('#viewer-actual').onclick=()=>viewerZoom(1);
+$('#viewer-in').onclick=()=>viewerZoom(PV.scale*1.25);
+$('#viewer-out').onclick=()=>viewerZoom(PV.scale/1.25);
+$('#viewer-fullscreen').onclick=()=>{
+  const root=$('#photo-viewer');
+  if(document.fullscreenElement===root) document.exitFullscreen().catch(e=>toast(e.message,'err'));
+  else if(root.requestFullscreen) root.requestFullscreen().catch(()=>toast('系统全屏不可用，可继续在当前窗口查看'));
+};
+$('#viewer-stage').addEventListener('wheel',e=>{if($('#viewer-canvas img')){e.preventDefault();viewerZoom(PV.scale*(e.deltaY<0?1.15:1/1.15));}},{passive:false});
+window.addEventListener('resize',()=>{if(!$('#photo-viewer').hidden) viewerResize();});
+document.addEventListener('keydown',e=>{
+  if($('#photo-viewer').hidden) return;
+  if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();closeViewer();}
+  else if(e.key==='+' || e.key==='='){e.preventDefault();viewerZoom(PV.scale*1.25);}
+  else if(e.key==='-'){e.preventDefault();viewerZoom(PV.scale/1.25);}
+},true);
+$('#wm-previews').addEventListener('click',e=>{
+  const button=e.target.closest('[data-wm-full]');
+  if(button) openWatermarkViewer(button.dataset.wmFull);
+});
+
+/* 轻量旋转留在媒体库，进度结束后就地刷新，不展开编辑面板。 */
+async function quickRotate(ids, op) {
+  if(EDIT.busy || deletingPhotos) return toast('请等待当前照片操作完成');
+  ids=Array.from(new Set(ids)); if(!ids.length) return toast('请先选择照片');
+  EDIT.busy=true;
+  try {
+    const details=await Promise.all(ids.map(id=>apiGet('/api/media/'+id)));
+    const photos=details.filter(a=>a.media_type==='image');
+    if(!photos.length) return toast('请选择照片，视频不参与旋转');
+    const fileIds=photos.map(a=>a.files[0].id), detailFile=details.find(a=>a.id===S.detailId)?.files[0].id;
+    EDIT.ids=photos.map(a=>a.id);
+    const r=await api('/api/edit/run',{method:'POST',body:{ids:EDIT.ids,op,mode:'overwrite',backup:true}});
+    await followLibraryEdit(r.job_id,fileIds,true);
+    if(detailFile && S.detailId){const current=await apiGet('/api/media/by-file/'+detailFile);await openDetail(current.id);}
+  } catch(e){toast(e.message,'err');}
+  finally{EDIT.busy=false;}
+}
+$('#sel-left').onclick=()=>quickRotate(Array.from(S.sel),'rot270');
+$('#sel-right').onclick=()=>quickRotate(Array.from(S.sel),'rot90');
+function installDatePickers(root=document) {
+  root.querySelectorAll('input[type="date"]').forEach(input=>{
+    if(input.dataset.pickerReady) return; input.dataset.pickerReady='1';
+    const wrapper=document.createElement('span');wrapper.className='date-picker-field';
+    input.before(wrapper); wrapper.appendChild(input);
+    const button=document.createElement('button');button.type='button';button.className='btn sm';button.textContent='选择日期';button.setAttribute('aria-label','选择日期');
+    button.onclick=()=>{try{if(input.showPicker) input.showPicker();else input.focus();}catch(e){input.focus();}};
+    wrapper.appendChild(button);
+  });
+}
+installDatePickers();
+document.addEventListener('click',e=>{
+  document.querySelectorAll('.library-menu[open]').forEach(menu=>{
+    if(!menu.contains(e.target) || (e.target.closest('.actions-panel') && e.target.closest('button'))) menu.open=false;
+  });
+});

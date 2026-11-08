@@ -22,6 +22,8 @@ mod imgops;
 mod jobs;
 mod livepair;
 mod media;
+mod portable;
+mod orientation;
 mod query;
 mod scan;
 mod server;
@@ -160,6 +162,14 @@ fn main() {
     // HEIC 解码器是可选的外置 DLL：找不到也不影响其它功能，只在需要时给出原因。
     heif::set_search_dirs(vec![paths.data_dir.join("lib")]);
 
+    if let Err(e) = ffmpeg::prepare_bundled() {
+        say(&format!("内置视频组件暂不可用：{e}"));
+        let _ = std::fs::write(paths.log_dir.join("ffmpeg-setup.log"), &e);
+    }
+
+    if let Err(e) = portable::prepare(&paths, !args.iter().any(|a| a == "--data-dir")) {
+        fatal(&format!("便携数据初始化失败：{e}\n请将程序放到可写的文件夹后重试。原数据保持不变。"));
+    }
     if let Err(e) = db::open(&paths.db_path) {
         fatal(&format!("数据库初始化失败：{e}\n\n数据目录：{}", paths.data_dir.display()));
     }

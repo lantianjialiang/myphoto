@@ -8,43 +8,79 @@ struct Item {
     file_id: String,
     path: String,
     hash: String,
+    #[serde(default)]
+    keep_one: bool,
 }
 
 pub fn plan(conn: &Connection, ids: &[String], all_copies: bool) -> Result<Value, String> {
+    let mut files = Vec::new();
+    for id in ids {
+        files.extend(
+            assets::files_of_asset(conn, id)?
+                .into_iter()
+                .take(if all_copies { usize::MAX } else { 1 }),
+        );
+    }
+    create_plan(conn, files, false)
+}
+
+pub fn plan_files(conn: &Connection, ids: &[String]) -> Result<Value, String> {
+    let mut files = Vec::new();
+    for id in ids {
+        let asset: String = conn
+            .query_row(
+                "SELECT asset_id FROM media_files WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let file = assets::files_of_asset(conn, &asset)?
+            .into_iter()
+            .find(|f| &f.id == id)
+            .ok_or("文件不存在")?;
+        files.push(file);
+    }
+    create_plan(conn, files, true)
+}
+
+fn create_plan(
+    conn: &Connection,
+    files: Vec<assets::FileRow>,
+    keep_one: bool,
+) -> Result<Value, String> {
     let mut items = Vec::new();
     let mut seen = HashSet::new();
-    for id in ids {
+    for f in files {
         let kind: String = conn
             .query_row(
                 "SELECT media_type FROM media_assets WHERE id=?1",
-                params![id],
+                params![f.asset_id],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
         if kind != "image" {
             return Err("删除入口仅处理照片，请先取消选择视频".into());
         }
-        let files = assets::files_of_asset(conn, id)?;
-        for f in files
-            .into_iter()
-            .take(if all_copies { usize::MAX } else { 1 })
-        {
-            let path = Path::new(&f.absolute_path);
-            if !seen.insert(util::path_key(path)) {
-                continue;
-            }
-            let meta =
-                std::fs::symlink_metadata(path).map_err(|e| format!("{}：{e}", f.file_name))?;
-            if !meta.is_file() || meta.file_type().is_symlink() {
-                return Err("不能删除目录或符号链接".into());
-            }
-            let (hash, _) = util::sha256_file(path).map_err(|e| e.to_string())?;
-            items.push(Item {
-                file_id: f.id,
-                path: f.absolute_path,
-                hash,
-            });
+        let path = Path::new(&f.absolute_path);
+        if !seen.insert(util::path_key(path)) {
+            continue;
         }
+        let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}：{e}", f.file_name))?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err("不能删除目录或符号链接".into());
+        }
+        let (hash, _) = util::sha256_file(path).map_err(|e| e.to_string())?;
+        if keep_one && !has_other_copy(conn, &f.absolute_path, &hash)? {
+            return Err(
+                "没有其他内容一致的在线副本，不能按重复文件删除；如需删除原件请在媒体库操作".into(),
+            );
+        }
+        items.push(Item {
+            file_id: f.id,
+            path: f.absolute_path,
+            hash,
+            keep_one,
+        });
     }
     if items.is_empty() {
         return Err("没有可删除的照片".into());
@@ -59,6 +95,23 @@ pub fn plan(conn: &Connection, ids: &[String], all_copies: bool) -> Result<Value
     Ok(
         json!({"plan_id":id,"count":items.len(),"files":items.iter().map(|f|json!({"path":f.path})).collect::<Vec<_>>() }),
     )
+}
+
+fn has_other_copy(conn: &Connection, path: &str, hash: &str) -> Result<bool, String> {
+    let mut st=conn.prepare("SELECT absolute_path FROM media_files WHERE sha256=?1 AND availability='online' AND absolute_path<>?2 COLLATE NOCASE").map_err(|e|e.to_string())?;
+    let rows = st
+        .query_map(params![hash, path], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for other in rows {
+        let other = other.map_err(|e| e.to_string())?;
+        if util::sha256_file(Path::new(&other))
+            .ok()
+            .is_some_and(|(h, _)| h == hash)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 pub fn take_plan(conn: &Connection, id: &str) -> Result<String, String> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
@@ -173,6 +226,9 @@ pub fn run(db_path: &Path, job: &JobCtl, payload: &str) -> Result<(), String> {
             let (hash, _) = util::sha256_file(path).map_err(|e| e.to_string())?;
             if hash != item.hash {
                 return Err("确认后照片已被修改，已跳过".into());
+            }
+            if item.keep_one && !has_other_copy(&conn, &item.path, &hash)? {
+                return Err("其他副本已不存在或内容变化，已保留当前照片".into());
             }
             recycle(path)?;
             forget_path(&conn, &item.path)

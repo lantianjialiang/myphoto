@@ -114,5 +114,17 @@ let checks=0; function check(name,fn){fn();checks++;console.log('PASS',name);}
     "$s = New-Object -ComObject Shell.Application; @($s.Namespace(10).Items() | Where-Object { $_.ExtendedProperty('System.Recycle.DeletedFrom') -eq $env:GX_TEST_PHOTOS } | ForEach-Object { $_.Name }) | ConvertTo-Json -Compress"],
     {windowsHide:true,encoding:'utf8',env:{...process.env,GX_TEST_PHOTOS:fs.realpathSync.native(photos)}});
   check('deleted test photo is present in Windows Recycle Bin',()=>assert(recycled.includes('single')));
+  const nested=path.join(photos,'Nested');fs.mkdirSync(nested);fs.writeFileSync(path.join(nested,'only.jpg'),Buffer.concat([fixture,Buffer.from('overlapping source')]));
+  const nestedSource=await api('/api/sources',{path:nested});await run('/api/sources/'+nestedSource.id+'/scan',{});await run('/api/sources/'+src.id+'/scan',{});await run('/api/hash',{all:true});
+  const overlap=(await api('/api/media?limit=100')).items.find(a=>a.file_name==='only.jpg');const overlapDetail=await api('/api/media/'+overlap.id);assert.equal(overlapDetail.files.length,2);
+  const groups=await api('/api/duplicates');
+  const protectedPlan=await response('/api/media/trash/plan',{file_ids:[overlapDetail.files[0].id]});
+  check('overlapping source records are not mistaken for disposable physical duplicates',()=>{assert(!groups.groups.some(g=>g.files.some(f=>f.path.endsWith('only.jpg'))));assert.equal(protectedPlan.ok,false);});
+  const guards=path.join(root,'Guards');fs.mkdirSync(guards);for(const n of ['guard1.jpg','guard2.jpg'])fs.writeFileSync(path.join(guards,n),Buffer.concat([fixture,Buffer.from('guard duplicate')]));
+  const gs=await api('/api/sources',{path:guards});await run('/api/sources/'+gs.id+'/scan',{});await run('/api/hash',{all:true});
+  const guard=(await api('/api/media?limit=100')).items.find(a=>a.file_name.startsWith('guard'));const gd=await api('/api/media/'+guard.id);
+  const gp=await api('/api/media/trash/plan',{file_ids:[gd.files[0].id]});fs.appendFileSync(gd.files[1].absolute_path,'changed sibling');
+  const retained=await run('/api/media/trash/run',{plan_id:gp.plan_id});
+  check('duplicate deletion preserves last intact copy if sibling changes after confirmation',()=>{assert.equal(retained.result.failed,1);assert(fs.existsSync(gd.files[0].absolute_path));assert(retained.result.message.includes('已保留'));});
   console.log(`PASS ${checks} deletion and rotation checks; fixtures: ${root}`);
 } finally {child.kill();}})().catch(e=>{console.error(e);fs.writeFileSync(path.join(root,'failure.log'),String(e)+'\n'+log);process.exitCode=1;});

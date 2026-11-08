@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pvm-regression-'));
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pvm-regression-')));
 const photos = path.join(root, 'Photos');
 fs.mkdirSync(photos);
 fs.copyFileSync(path.join(__dirname, 'fixtures/gps.jpg'), path.join(photos, '20200102_gps.jpg'));

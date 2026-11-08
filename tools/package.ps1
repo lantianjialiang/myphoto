@@ -12,6 +12,7 @@
 param(
     [string]$Version = '',
     [switch]$SkipBuild,
+    [switch]$RefreshPackage,
     [switch]$Msix
 )
 
@@ -30,6 +31,15 @@ $distRoot = Join-Path $root 'dist'
 $name = "Guangxia-$Version-win-x64"
 $out = Join-Path $distRoot $name
 
+if ((Test-Path -LiteralPath $out) -and !$RefreshPackage) {
+    throw "交付目录已存在：$out。请先保留或移走旧包，避免删除其中的用户数据。"
+}
+
+# 仓库与交付目录都保存 7z 组件，不提交解压后超过 GitHub 限制的 exe。
+$libSrc = Join-Path $root 'lib'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\compress-ffmpeg.ps1')
+if ($LASTEXITCODE -ne 0) { throw '准备内置 FFmpeg 压缩组件失败，已停止打包' }
+
 if (-not $SkipBuild) {
     Write-Host '编译 release…' -ForegroundColor Cyan
     Push-Location $root
@@ -41,10 +51,7 @@ if (-not $SkipBuild) {
 if (-not (Test-Path -LiteralPath $exeSrc)) { throw "找不到 $exeSrc，请先编译" }
 
 # ---------- 便携目录 ----------
-# 清空重来；个别环境（含删除防护/占用）删不掉时退化为覆盖写入，不中断打包
-if (Test-Path -LiteralPath $out) {
-    throw "交付目录已存在：$out。请先保留或移走旧包，避免删除其中的用户数据。"
-}
+# 显式刷新时仅更新程序管理的文件，保留 data、exports 及其他本地内容。
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $out 'lib') | Out-Null
 
@@ -56,6 +63,11 @@ Copy-Item -LiteralPath (Join-Path $root 'assets/guangxia.ico') -Destination (Joi
 $libSrc = Join-Path $root 'lib'
 if (Test-Path -LiteralPath $libSrc) {
     Copy-Item -Path (Join-Path $libSrc '*.dll') -Destination (Join-Path $out 'lib') -Force
+    $ffmpeg = Join-Path $libSrc 'ffmpeg.7z'
+    if (-not (Test-Path -LiteralPath $ffmpeg)) { throw '缺少内置 FFmpeg：lib\ffmpeg.7z，无法交付完整视频功能' }
+    Copy-Item -LiteralPath $ffmpeg -Destination (Join-Path $out 'lib') -Force
+    Copy-Item -LiteralPath (Join-Path $libSrc 'ffmpeg.sha256') -Destination (Join-Path $out 'lib') -Force
+    Copy-Item -LiteralPath (Join-Path $libSrc 'README-FFmpeg.txt') -Destination (Join-Path $out 'lib') -Force
     Copy-Item -Path (Join-Path $libSrc 'LICENSE-*.txt') -Destination (Join-Path $out 'lib') -Force
 } else {
     Write-Host '警告：没有 lib\ 目录，包内将不含 HEIC 解码器' -ForegroundColor Yellow
@@ -81,6 +93,10 @@ $notices = @"
 本目录包含以下第三方组件（动态链接，可自行替换同名 DLL）：
   lib\heif.dll      libheif 1.23.7   LGPL-3.0   详见 lib\LICENSE-libheif.txt
   lib\libde265.dll  libde265 1.0.15  LGPL-3.0   详见 lib\LICENSE-libde265.txt
+  lib\ffmpeg.7z     FFmpeg（Gyan Windows essentials build）GPL-3.0-or-later
+                   首次启动自动离线解压，SHA-256 校验后使用。
+                   版本、构建配置及源码链接：lib\README-FFmpeg.txt
+                   许可证：lib\LICENSE-FFmpeg.txt
 
 这两个 DLL 仅用于 HEIC/HEIF 解码，可以整体删除：程序仍可正常运行，
 只是 HEIC 文件会退化为"只索引、无缩略图"。
@@ -92,7 +108,24 @@ Set-Content -LiteralPath (Join-Path $out 'THIRD-PARTY-NOTICES.txt') -Value $noti
 # ---------- 压缩包 ----------
 # 用 -Force 覆盖旧包，避免先删除（某些环境会拦截删除操作）
 $zip = "$out.zip"
-Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+$zipStage = Join-Path $root ('.cache\package\' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path (Join-Path $zipStage 'lib') | Out-Null
+foreach ($file in @('Guangxia.exe','Guangxia.ico','启动.cmd','README.md','TODO.md','THIRD-PARTY-NOTICES.txt')) {
+    $source = Join-Path $out $file
+    if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $zipStage }
+}
+Get-ChildItem -LiteralPath (Join-Path $out 'lib') -File | Where-Object {
+    $_.Extension -eq '.dll' -or $_.Name -like 'LICENSE-*.txt' -or
+    $_.Name -in @('ffmpeg.7z','ffmpeg.sha256','README-FFmpeg.txt')
+} | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $zipStage 'lib') }
+try {
+    Compress-Archive -Path (Join-Path $zipStage '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+} finally {
+    $stageAbsolute = [IO.Path]::GetFullPath($zipStage)
+    $allowedStageRoot = [IO.Path]::GetFullPath((Join-Path $root '.cache\package')) + [IO.Path]::DirectorySeparatorChar
+    if (!$stageAbsolute.StartsWith($allowedStageRoot,[StringComparison]::OrdinalIgnoreCase)) { throw '打包临时目录越界，拒绝清理' }
+    Remove-Item -LiteralPath $stageAbsolute -Recurse -Force
+}
 
 # ---------- MSIX（可选，无签名证书时只出包不签名） ----------
 $msixPath = "$out.msix"

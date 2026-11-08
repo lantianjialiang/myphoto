@@ -40,7 +40,7 @@
         <span class="ico">⌕</span>
         <input id="q" type="search" placeholder="搜索文件名、路径、相机…" autocomplete="off">
       </div>
-      <div class="filters">
+      <details class="library-menu" id="library-filters"><summary class="btn">筛选条件 <span id="filter-count"></span></summary><div class="filters menu-panel">
         <select id="f-type" title="媒体类型">
           <option value="">全部类型</option>
           <option value="image">照片</option>
@@ -57,14 +57,12 @@
         <select id="f-source" title="媒体源"><option value="">全部媒体源</option></select>
         <select id="f-tag" title="标签"><option value="">全部标签</option></select>
         <select id="f-watermark" title="水印状态"><option value="">全部水印状态</option><option value="0">未标记水印</option><option value="1">已有水印</option></select>
-        <button class="chip" id="f-star" title="只看星标">★ 星标</button>
-        <button class="chip" id="f-fav" title="只看收藏">收藏</button>
         <button class="chip" id="f-live" title="只看实况照片">实况</button>
         <button class="chip" id="f-review" title="只看需要确认日期的">待确认</button>
         <button class="chip" id="f-dup" title="只看有重复副本的">重复</button>
-        <button class="chip" id="f-marked" title="只看已标记的">已标记</button>
         <button class="chip ghost" id="f-clear">清除筛选</button>
-      </div>
+      </div></details>
+      <button class="chip" id="f-fav" title="只看收藏">♡ 收藏</button>
       <div class="spacer"></div>
       <div class="tools">
         <select id="sort" title="排序">
@@ -76,28 +74,33 @@
         </select>
         <button class="icon-btn" id="order" title="切换升/降序">↓</button>
         <button class="icon-btn" id="viewmode" title="切换网格/列表">▤</button>
-        <button class="btn" id="btn-hash" title="对候选重复文件计算 SHA-256">计算哈希</button>
+        <details class="library-menu"><summary class="btn">导出与整理</summary><div class="menu-panel actions-panel">
+        <button class="btn" id="btn-hash" title="对候选重复文件计算 SHA-256">检查重复文件</button>
         <button class="btn" id="btn-album" title="把当前筛选结果导出成可离线浏览的网页相册">网页相册…</button>
         <button class="btn" id="btn-slideshow" title="把选中的照片与视频合成一段幻灯片">幻灯片…</button>
         <button class="btn primary" id="btn-archive">归档整理…</button>
+        </div></details>
       </div>
     </header>
 
     <!-- 选择操作条 -->
     <div class="selbar" id="selbar" hidden>
       <b id="sel-count">已选 0 项</b>
-      <span class="sep"></span>
-      <button class="btn sm" id="sel-all">全选当前筛选结果</button>
       <button class="btn sm" id="sel-clear">取消选择</button>
-      <button class="btn sm" id="sel-date">修改拍摄日期…</button>
-      <button class="btn sm" id="sel-shift">时间偏移…</button>
-      <button class="btn sm" id="sel-tag">标签…</button>
-      <button class="btn sm" id="sel-star">★ 星标</button>
-      <button class="btn sm" id="sel-mark">标记 / 取消标记</button>
-      <button class="btn sm primary" id="sel-archive">加入归档任务</button>
-<button class="btn sm primary" id="sel-edit">编辑所选照片</button>
-        <button class="btn sm danger" id="sel-delete">删除所选照片…</button>
-      <button class="btn sm primary" id="sel-watermark">给所选照片加水印</button><button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
+      <span class="sep"></span>
+      <button class="btn sm" id="sel-left">⟲ 左旋</button><button class="btn sm" id="sel-right">⟳ 右旋</button>
+      <button class="btn sm" id="sel-favorite">♡ 收藏</button>
+      <button class="btn sm" id="sel-watermark">添加水印</button>
+      <button class="btn sm danger" id="sel-delete">删除…</button>
+      <details class="library-menu"><summary class="btn sm">更多操作</summary><div class="menu-panel actions-panel">
+        <button class="btn sm" id="sel-all">全选当前筛选结果</button>
+        <button class="btn sm" id="sel-edit">裁剪、调色与打码…</button>
+        <button class="btn sm" id="sel-date">修改拍摄日期…</button>
+        <button class="btn sm" id="sel-shift">时间偏移…</button>
+        <button class="btn sm" id="sel-tag">标签…</button>
+        <button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
+        <button class="btn sm" id="sel-archive">归档所选照片…</button>
+      </div></details>
     </div>
 
     <section class="views">
@@ -576,7 +579,9 @@
     <div class="detail-head">
       <div class="detail-title" id="d-title">详情</div>
       <div class="detail-tools">
-        <button class="icon-btn" id="d-rotate" title="旋转预览（不修改原图）">↻</button>
+        <button class="icon-btn" id="d-fullscreen" title="全屏预览">⛶</button>
+        <button class="icon-btn" id="d-left" title="左旋当前照片">⟲</button>
+        <button class="icon-btn" id="d-right" title="右旋当前照片">⟳</button>
         <button class="btn sm" id="d-edit">编辑此照片</button>
         <button class="btn sm danger" id="d-delete">删除照片…</button>
         <button class="icon-btn" id="d-close" title="关闭">×</button>
@@ -588,6 +593,21 @@
 
 <div class="modal-root" id="modal-root" hidden></div>
 <div class="toasts" id="toasts"></div>
+<div id="photo-viewer" class="photo-viewer" role="dialog" aria-modal="true" aria-label="全屏预览" hidden>
+  <div class="viewer-toolbar">
+    <strong id="viewer-title"></strong>
+    <button class="btn sm" id="viewer-fit">适应窗口</button>
+    <button class="btn sm" id="viewer-actual">100%</button>
+    <button class="btn sm" id="viewer-out" aria-label="缩小">−</button>
+    <span id="viewer-scale"></span>
+    <button class="btn sm" id="viewer-in" aria-label="放大">＋</button>
+    <button class="btn sm" id="viewer-fullscreen">系统全屏</button>
+    <button class="btn sm" id="viewer-info">照片信息</button>
+    <button class="btn" id="viewer-close">关闭（Esc）</button>
+  </div>
+  <div id="viewer-status" role="status"></div>
+  <div id="viewer-stage" tabindex="0"><div id="viewer-canvas"></div></div>
+</div>
 <script src="/app.js"></script>
 </body>
 </html>

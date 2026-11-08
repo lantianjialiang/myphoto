@@ -204,7 +204,7 @@ pub fn restore_batch(db_path: &Path, job_id: &str) -> Result<Value, String> {
         // 还原：先把备份内容写回原位。
         // 注意 Windows 的 rename 不能覆盖已存在的文件，所以用 copy 覆盖写，
         // 并且先留一份「当前版本」到 .pre-restore，避免还原本身不可逆。
-        let safety = dst.with_file_name(format!(
+        let safety = src.with_file_name(format!(
             ".{}.pre-restore",
             dst.file_name().unwrap_or_default().to_string_lossy()
         ));
@@ -279,6 +279,7 @@ pub fn run(
 
     let mut errors: Vec<String> = Vec::new();
     let mut overwritten = 0usize;
+    let mut oriented = 0usize;
 
     for (idx, id) in req.ids.iter().enumerate() {
         if job.is_cancelled() { break; }
@@ -292,6 +293,13 @@ pub fn run(
         let src = PathBuf::from(&file.absolute_path);
         let had_watermark = crate::watermark::has_watermark(&conn,&src)?;
         let src_ext = file.ext.to_lowercase();
+        if req.overwrite && matches!(src_ext.as_str(),"heic"|"heif") {
+            let delta=match req.action { Action::Rotate(crate::imgops::Op::Rot90)=>Some(90),Action::Rotate(crate::imgops::Op::Rot180)=>Some(180),Action::Rotate(crate::imgops::Op::Rot270)=>Some(270),_=>None };
+            if let Some(delta)=delta {
+                match crate::orientation::rotate(&conn,id,delta) {Ok(())=>{job.ok();oriented+=1;},Err(e)=>{job.fail();errors.push(e);}}
+                continue;
+            }
+        }
         if crate::util::media_kind(&src_ext) == Some("video") {
             job.skip();
             continue;
@@ -443,6 +451,7 @@ pub fn run(
     if let Some(first) = errors.first() {
         msg.push_str(&format!("；首个问题：{first}"));
     }
+    if oriented>0 { msg.push_str(&format!("；{} 张 HEIC 已保存查看方向，原件保持不变，水印和相册使用新方向",oriented)); }
     job.phase(&msg);
     Ok(())
 }
@@ -476,7 +485,7 @@ pub fn preview(
         return Err("原文件当前不可用（外置盘离线或已移动）".into());
     }
     let src = PathBuf::from(&file.absolute_path);
-    let mut img = crate::media::load_oriented(&src)?.to_rgba8();
+    let mut img = crate::orientation::load(&conn,asset_id,&src)?.to_rgba8();
     // 先缩小再处理：大图裁剪/打码能快很多
     if max_side > 0 && img.width().max(img.height()) > max_side {
         let ratio = max_side as f32 / img.width().max(img.height()) as f32;

@@ -1,6 +1,19 @@
 target/
 node_modules/
 .cache/
+
+# Keep dist packages and the compressed FFmpeg component in Git.
+# The extracted executable is generated automatically on first launch.
+/lib/ffmpeg.exe
+/dist/**/lib/ffmpeg.exe
+/lib/.ffmpeg-unpack-*/
+/dist/**/lib/.ffmpeg-unpack-*/
+
+# Portable app data and generated media.
+/data/
+/exports/
+/dist/**/data/
+/dist/**/exports/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

@@ -1065,10 +1065,11 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
     }
     let path = PathBuf::from(&file.absolute_path);
     if cfg.skip_watermarked && has_watermark(&conn,&path)? {
-        let img=media::load_oriented(&path)?.thumbnail(max_side.max(256),max_side.max(256)).to_rgba8();
+        let original=crate::orientation::load(&conn,asset_id,&path)?;
+        let img=if max_side==0 { original.to_rgba8() } else { original.thumbnail(max_side,max_side).to_rgba8() };
         return Ok(json!({"image":format!("data:image/jpeg;base64,{}",base64::engine::general_purpose::STANDARD.encode(encode(&img,"jpg",88)?)),"width":img.width(),"height":img.height(),"font_px":0,"text":"","file_name":file.file_name,"warning":"已有水印：批量处理时跳过，不会叠加","watermarked":true}));
     }
-    let mut img = media::load_oriented(&path)?.to_rgba8();
+    let mut img = crate::orientation::load(&conn,asset_id,&path)?.to_rgba8();
     img = rotate_image_by(img, cfg.rotate_image);
     if max_side > 0 && (img.width() > max_side || img.height() > max_side) {
         let ratio = max_side as f32 / img.width().max(img.height()) as f32;
@@ -1481,7 +1482,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
                     backup_used = Some(dst);
                 }
             }
-            let img = media::load_oriented(&src)?.to_rgba8();
+            let img = crate::orientation::load(&conn,id,&src)?.to_rgba8();
             let img = rotate_image_by(img, cfg.rotate_image);
             let rendered = render(img, &cfg, &text);
             if rendered.font_px <= 0.0 {

@@ -5,7 +5,6 @@
 
 use crate::assets;
 use crate::jobs::JobCtl;
-use crate::media;
 use crate::util;
 use serde::Deserialize;
 use rusqlite::OptionalExtension;
@@ -498,7 +497,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: AlbumRequest) -> Result<(), String
         let stem = format!("{idx:04}");
         let src = PathBuf::from(&file.absolute_path);
         let result = (|| -> Result<Value, String> {
-            let mut img = media::load_oriented(&src)?.to_rgba8();
+            let mut img = crate::orientation::load(&conn,id,&src)?.to_rgba8();
             if let Some(cfg) = &req.watermark {
                 img = crate::watermark::render_for_asset(&conn, id, &src, img, cfg)?;
             }

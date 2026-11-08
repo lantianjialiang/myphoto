@@ -179,8 +179,8 @@ fn build_mp4(exe: &Path, segs: &[Segment], out: &Path, size: u32, bg: &str) -> R
                 .arg(&seg.path);
         }
     }
-    // 注意：-filter_complex 只接受内联滤镜串，滤镜脚本要用 -filter_complex_script
-    cmd.arg("-filter_complex_script")
+    // / 前缀从文件读取选项值；旧 -filter_complex_script 已在 FFmpeg 9 移除。
+    cmd.arg("-/filter_complex")
         .arg(&filter_file)
         .arg("-map")
         .arg("[vout]")
@@ -312,14 +312,24 @@ pub fn run(db_path: &Path, job: &JobCtl, req: &Request) -> Result<(), String> {
 
     // 收集素材
     let mut segs: Vec<Segment> = Vec::new();
+    let photo_cache=db_path.parent().unwrap_or(Path::new(".")).join("cache").join(format!("slideshow-{}",job.id));
+    let mut rendered_photos=Vec::new();
     for id in req.ids.iter() {
         let Ok(Some(file)) = crate::assets::primary_file(&conn, id) else {
             continue;
         };
         let is_video = crate::util::media_kind(&file.ext) == Some("video");
-        let path = PathBuf::from(&file.absolute_path);
+        let mut path = PathBuf::from(&file.absolute_path);
         if !path.is_file() {
             continue;
+        }
+        if !is_video {
+            std::fs::create_dir_all(&photo_cache).map_err(|e|e.to_string())?;
+            let rendered=photo_cache.join(format!("{}.jpg",rendered_photos.len()));
+            let img=crate::orientation::load(&conn,id,&path)?;
+            let bytes=crate::watermark::encode(&img.to_rgba8(),"jpg",95)?;
+            std::fs::write(&rendered,bytes).map_err(|e|e.to_string())?;
+            rendered_photos.push(rendered.clone());path=rendered;
         }
         let seconds = if is_video {
             let dur = probe_duration(&exe, &path).unwrap_or(0.0);
@@ -350,6 +360,8 @@ pub fn run(db_path: &Path, job: &JobCtl, req: &Request) -> Result<(), String> {
         Format::Mp4 => build_mp4(&exe, &segs, &out_path, req.size, &req.background),
         Format::Gif => build_gif(&exe, &segs, &out_path, req.size, &req.background),
     };
+    for path in rendered_photos { let _=std::fs::remove_file(path); }
+    let _=std::fs::remove_dir(&photo_cache);
     match res {
         Ok(()) => {
             job.ok();

@@ -106,8 +106,9 @@ pub fn recompute(conn: &Connection, asset_id: &str) -> R<()> {
         .and_then(|f| f.metadata_json.as_deref())
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
-    let width = meta.get("width").and_then(|v| v.as_i64());
-    let height = meta.get("height").and_then(|v| v.as_i64());
+    let mut width = meta.get("width").and_then(|v| v.as_i64());
+    let mut height = meta.get("height").and_then(|v| v.as_i64());
+    if matches!(crate::orientation::degrees(conn,asset_id),90|270) { std::mem::swap(&mut width,&mut height); }
     let duration = meta.get("duration_ms").and_then(|v| v.as_i64());
     let camera = meta.get("camera").and_then(|v| v.as_str()).map(|s| s.to_string());
     let gps_lat = meta.get("gps_lat").and_then(|v| v.as_f64());

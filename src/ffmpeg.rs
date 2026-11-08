@@ -1,7 +1,7 @@
 //! 可选的 FFmpeg 集成：给视频烧录时间水印。
 //!
-//! 程序自身不带编码器（H.264/H.265 编码会把体积从 8 MB 拉到 80 MB+），
-//! 所以这里只做"发现 + 调用"：
+//! 便携包内置 lib/ffmpeg.7z，首次启动离线解压到 lib/ffmpeg.exe。
+//! 保留环境变量与 PATH 查找，支持显式使用自己的 FFmpeg：
 //!   * 查找顺序：环境变量 `PVM_FFMPEG` → 程序目录 `ffmpeg.exe` → 程序目录 `lib\ffmpeg.exe` → PATH
 //!   * 文字先写到临时文件，用 `drawtext=textfile=` 读入，避免中英文冒号引号在滤镜里被转义错
 //!   * 位置/字号全部用表达式（`min(w\,h)*0.03`），不需要 ffprobe 先探测分辨率
@@ -45,6 +45,65 @@ fn exe_dir() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Git 与交付包保存压缩组件，未解压的完整包也能直接双击主程序。
+pub fn prepare_bundled() -> Result<(), String> {
+    prepare_at(&exe_dir().join("lib"))
+}
+
+fn prepare_at(lib: &Path) -> Result<(), String> {
+    let destination = lib.join("ffmpeg.exe");
+    let archive = lib.join("ffmpeg.7z");
+    if destination.is_file() || !archive.is_file() {
+        return Ok(());
+    }
+    let manifest = std::fs::read_to_string(lib.join("ffmpeg.sha256"))
+        .map_err(|e| format!("读取 FFmpeg 校验文件失败：{e}"))?;
+    let expected = manifest.split_whitespace().next().unwrap_or("");
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("FFmpeg 校验文件格式无效".into());
+    }
+    let stage = lib.join(format!(".ffmpeg-unpack-{}", crate::util::uuid()));
+    std::fs::create_dir(&stage).map_err(|e| format!("无法创建组件解压目录：{e}"))?;
+    let extracted = stage.join("ffmpeg.exe");
+    let result = (|| -> Result<(), String> {
+        let output = hidden(
+            Command::new("tar.exe")
+                .arg("-xf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&stage)
+                .arg("ffmpeg.exe"),
+        )
+        .output()
+        .map_err(|e| format!("无法启动 Windows 解压工具：{e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "解压 FFmpeg 失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let (actual, _) =
+            crate::util::sha256_file(&extracted).map_err(|e| format!("读取解压组件失败：{e}"))?;
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err("FFmpeg 完整性校验失败，未安装组件".into());
+        }
+        if let Err(e) = std::fs::rename(&extracted, &destination) {
+            // 两个窗口首次同时启动时，另一个进程可能已完成相同组件的安装。
+            if !crate::util::sha256_file(&destination)
+                .ok()
+                .is_some_and(|(hash, _)| hash.eq_ignore_ascii_case(expected))
+            {
+                return Err(format!("安装 FFmpeg 组件失败：{e}"));
+            }
+        }
+        Ok(())
+    })();
+    // 这里只清理本次创建的单个临时文件和空目录，不递归触碰用户文件。
+    let _ = std::fs::remove_file(&extracted);
+    let _ = std::fs::remove_dir(&stage);
+    result
 }
 
 /// 找到可用的 ffmpeg。
@@ -363,7 +422,7 @@ pub fn watermark_video(src: &Path, dst: &Path, style: &TextStyle, text: &str, cr
         .arg("error")
         .arg("-i")
         .arg(src)
-        .arg("-filter_script:v")
+        .arg("-/filter:v")
         .arg(&filter_file)
         .arg("-c:v")
         .arg("libx264")

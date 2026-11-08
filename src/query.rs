@@ -105,7 +105,7 @@ impl Filter {
         if self.dup == Some(true) {
             parts.push(
                 "EXISTS(SELECT 1 FROM media_files d1 WHERE d1.asset_id=a.id AND d1.sha256 IS NOT NULL
-                 AND (SELECT count(*) FROM media_files d2 WHERE d2.sha256=d1.sha256)>1)"
+                 AND (SELECT count(DISTINCT lower(absolute_path)) FROM media_files d2 WHERE d2.sha256=d1.sha256)>1)"
                     .into(),
             );
         }
@@ -187,7 +187,7 @@ pub fn list(
                 pf.sha256, pf.marked,
                 (SELECT count(*) FROM media_files fc WHERE fc.asset_id=a.id) AS file_count,
                 EXISTS(SELECT 1 FROM media_files d1 WHERE d1.asset_id=a.id AND d1.sha256 IS NOT NULL
-                       AND (SELECT count(*) FROM media_files d2 WHERE d2.sha256=d1.sha256)>1) AS is_dup,
+                       AND (SELECT count(DISTINCT lower(absolute_path)) FROM media_files d2 WHERE d2.sha256=d1.sha256)>1) AS is_dup,
                 (SELECT error FROM (SELECT json_extract(metadata_json,'$.error') AS error
                        FROM media_files x WHERE x.asset_id=a.id ORDER BY x.rowid LIMIT 1)) AS decode_error,
                 a.star, a.favorite, a.live_pair_id,

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 pub type R<T> = Result<T, String>;
 
@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS watermark_marks (
 CREATE INDEX IF NOT EXISTS idx_watermark_hash ON watermark_marks(content_hash);
 CREATE TABLE IF NOT EXISTS watermark_hashes (content_hash TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS delete_plans (id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending');
+CREATE TABLE IF NOT EXISTS media_rotation (asset_id TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE, degrees INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS watermark_rotation (
  asset_id TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
  degrees INTEGER NOT NULL DEFAULT 0
@@ -380,6 +381,9 @@ CREATE INDEX IF NOT EXISTS idx_editbackup_job ON edit_backups(job_id, id);
     .map_err(map_err)?;
 
     if user_version(conn) < SCHEMA_VERSION {
+        if user_version(conn) < 12 {
+            conn.execute_batch("UPDATE media_assets SET favorite=1 WHERE star=1; UPDATE media_assets SET star=0 WHERE star=1;").map_err(map_err)?;
+        }
         // 内置水印预设：只在缺失时写入，用户改过的不会被覆盖。
         crate::watermark::seed_presets(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};"))
@@ -398,16 +402,19 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn resolve() -> AppPaths {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir());
-        let data_dir = base.join("PhotoVideoManager");
+        let base = std::env::current_exe().ok().and_then(|p|p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let data_dir = base.join("data");
         AppPaths {
             db_path: data_dir.join("library.db"),
             cache_dir: data_dir.join("cache"),
             log_dir: data_dir.join("logs"),
             data_dir,
         }
+    }
+
+    pub fn root_dir(&self) -> PathBuf {
+        self.data_dir.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
     }
 }
 

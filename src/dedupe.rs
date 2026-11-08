@@ -153,7 +153,7 @@ pub fn merge_duplicates(conn: &Connection) -> Result<i64, String> {
 pub fn groups_json(conn: &Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT sha256, count(*) AS c, sum(size_bytes) AS bytes, max(size_bytes) AS one
+            "SELECT sha256, count(DISTINCT lower(absolute_path)) AS c, count(DISTINCT lower(absolute_path))*max(size_bytes) AS bytes, max(size_bytes) AS one
              FROM media_files WHERE sha256 IS NOT NULL
              GROUP BY sha256 HAVING c>1 ORDER BY bytes DESC",
         )
@@ -179,9 +179,10 @@ pub fn groups_json(conn: &Connection) -> Result<serde_json::Value, String> {
             .prepare(
                 "SELECT f.id,f.asset_id,f.absolute_path,f.size_bytes,f.availability,f.taken_at,
                         f.marked,f.mtime_ms,s.root_path,
-                        (SELECT count(*) FROM media_files x WHERE x.asset_id=f.asset_id) AS copies
+                        (SELECT count(*) FROM media_files x WHERE x.asset_id=f.asset_id) AS copies,
+                        (SELECT media_type FROM media_assets a WHERE a.id=f.asset_id)
                  FROM media_files f JOIN sources s ON s.id=f.source_id
-                 WHERE f.sha256=?1 ORDER BY f.availability, f.absolute_path",
+                 WHERE f.sha256=?1 GROUP BY f.absolute_path COLLATE NOCASE ORDER BY f.availability, f.absolute_path",
             )
             .map_err(|e| e.to_string())?;
         let files: Vec<serde_json::Value> = fs
@@ -197,6 +198,7 @@ pub fn groups_json(conn: &Connection) -> Result<serde_json::Value, String> {
                     "mtime_ms": r.get::<_, i64>(7)?,
                     "source_root": r.get::<_, String>(8)?,
                     "asset_file_count": r.get::<_, i64>(9)?,
+                    "media_type": r.get::<_, String>(10)?,
                 }))
             })
             .map_err(|e| e.to_string())?
