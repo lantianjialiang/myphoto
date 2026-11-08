@@ -6,6 +6,7 @@
 <title>光匣 · 本地影像管家</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico?v=1.8.1">
 <link rel="stylesheet" href="/style.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('gx.theme')==='light'?'light':'dark';}catch(e){document.documentElement.dataset.theme='dark';}</script>
 </head>
 <body>
 <div class="app">
@@ -28,6 +29,7 @@
     </nav>
     <div class="rail-stats" id="rail-stats"></div>
     <div class="rail-foot">
+      <button class="btn sm" id="theme-toggle" title="切换明暗主题">☀ 浅色主题</button>
       <div class="disk" id="disk-info">—</div>
       <div class="ver" id="ver"></div>
     </div>
@@ -60,7 +62,7 @@
         <button class="chip" id="f-live" title="只看实况照片">实况</button>
         <button class="chip" id="f-review" title="只看需要确认日期的">待确认</button>
         <button class="chip" id="f-dup" title="只看有重复副本的">重复</button>
-        <button class="chip ghost" id="f-clear">清除筛选</button>
+        <button class="chip ghost" id="f-clear">清除条件</button>
       </div></details>
       <button class="chip" id="f-fav" title="只看收藏">♡ 收藏</button>
       <div class="spacer"></div>
@@ -99,6 +101,7 @@
         <button class="btn sm" id="sel-shift">时间偏移…</button>
         <button class="btn sm" id="sel-tag">标签…</button>
         <button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
+        <button class="btn sm" id="sel-watermark-detect">检测已有水印…</button>
         <button class="btn sm" id="sel-archive">归档所选照片…</button>
       </div></details>
     </div>
@@ -155,13 +158,14 @@
             <button data-mode="conflict">时间冲突</button>
           </div>
         </div>
+        <div class="review-tools"><button class="btn sm" id="review-page-all">选择已加载项</button><button class="btn sm" id="review-all">全选当前待整理结果</button><button class="btn sm" id="review-clear">取消选择</button><span id="review-total"></span></div>
         <div class="vbody" id="review-list"></div>
         <div class="selbar inline" id="review-bar" hidden>
           <b id="review-count">已选 0 项</b>
-          <input type="date" id="review-date">
-          <input type="time" id="review-time" step="1" value="00:00:00">
-          <button class="btn sm primary" id="review-apply">批量确认日期</button>
-          <button class="btn sm" id="review-unknown">标记为未知</button>
+          <button class="btn sm primary" id="review-filesystem">按文件修改时间确认</button>
+          <button class="btn sm" id="review-recommended">确认各自当前日期</button>
+          <details class="library-menu"><summary class="btn sm">指定统一日期</summary><div class="menu-panel"><input type="date" id="review-date"><input type="time" id="review-time" step="1" value="00:00:00"><button class="btn sm primary" id="review-apply">应用统一日期</button></div></details>
+          <button class="btn sm" id="review-unknown">确认日期未知</button>
         </div>
       </div>
 
@@ -170,7 +174,7 @@
         <div class="vhead">
           <div>
             <h2>完全重复文件</h2>
-            <p>结论基于完整内容的 SHA-256，不是文件名或大小猜测。本版本只查看与标记，不会自动删除任何文件。</p>
+            <p>结论基于完整内容的 SHA-256。可选择保留副本或确认删除其他副本；删除会移到 Windows 回收站。</p>
           </div>
           <div class="vhead-actions">
             <span class="stat" id="dup-stat"></span>
@@ -185,7 +189,7 @@
         <div class="vhead">
           <div>
             <h2>相似照片</h2>
-            <p>对缩略图计算 64 位 dHash 后按汉明距离聚类，用于发现连拍、修图前后的版本。仅作候选提示，不会移动或删除任何文件；内容完全相同的文件在「重复文件」页处理。</p>
+            <p>按画面相似程度列出候选，不代表内容相同。请自行比较后删除不需要的照片；删除会移到 Windows 回收站。</p>
           </div>
           <div class="vhead-actions">
             <label class="range-label">阈值 <input type="range" id="sim-threshold" min="0" max="16" step="1" value="6"><b id="sim-threshold-val">6</b></label>
@@ -334,9 +338,12 @@
             </div>
             <div class="wm-previews" id="wm-previews"></div>
             <div class="wm-runbar">
-<label class="wmlabel">处理范围 <select id="wm-scope-mode"><option value="selected">优先使用媒体库所选照片</option><option value="filtered">当前筛选结果全部</option></select></label><label class="wm-check"><input type="checkbox" id="wm-known-skip" checked> 跳过已有水印的照片</label><div class="wm-hint">本软件生成的水印自动记录；其他软件或手机已有的水印，请先在媒体库选中并标记。取消勾选可强制重加。</div>
-              <div class="wm-runline">
-                <label class="wmlabel" style="flex:1">输出目录
+<label class="wmlabel">处理范围 <select id="wm-scope-mode"><option value="selected">媒体库所选项目</option><option value="filtered">当前筛选结果全部</option></select></label>
+<label class="wm-check"><input type="checkbox" id="wm-known-skip" checked> 跳过已确认有水印的照片</label>
+<label class="wm-check"><input type="checkbox" id="wm-suspect-skip"> 同时跳过算法判断的疑似水印</label>
+<div class="wm-hint">样片自动进行离线边缘文字检测；“疑似”可能误判，默认仅提示。可人工确认为已有水印，或勾选跳过疑似项。未检出不代表没有水印。</div>
+              <div class="wm-runline" id="wm-out-row">
+                <label class="wmlabel" style="flex:1">副本保存位置
                   <div style="display:flex;gap:8px;margin-top:4px">
                     <input type="text" id="wm-out" placeholder="例如 D:\水印输出">
                     <button class="btn" id="wm-pick">浏览…</button>
@@ -363,9 +370,10 @@
                   </select>
                 </label>
                 <label class="wm-check" id="wm-backup-row" hidden><input type="checkbox" id="wm-backup" checked> 覆盖前先备份原件</label>
-                <button class="btn sm" id="wm-backups" title="查看并还原覆盖前的原件备份">覆盖记录</button>
+                <button class="btn sm" id="wm-backups" title="查看覆盖原图前的自动备份，并还原原图" hidden>还原原图备份</button>
                 <span class="wm-warn" id="wm-warn" hidden>注意：覆盖模式会直接改写原文件，建议先用 1 张试手。</span>
               </div>
+              <p class="wm-hint" id="wm-mode-help"></p>
               <div class="wm-runline">
                 <label class="wm-check" title="取消勾选会移除 EXIF/GPS；HEIC 转 JPEG 时同样生效"><input type="checkbox" id="wm-exif" checked> 保留 EXIF</label>
                 <label class="wm-check" title="不勾选时同名文件自动加序号，不会覆盖"><input type="checkbox" id="wm-skip" checked> 跳过已存在文件</label>
@@ -595,6 +603,9 @@
 <div class="toasts" id="toasts"></div>
 <div id="photo-viewer" class="photo-viewer" role="dialog" aria-modal="true" aria-label="全屏预览" hidden>
   <div class="viewer-toolbar">
+    <button class="btn" id="viewer-prev" aria-label="上一张" title="上一张（←）">❮</button>
+    <span id="viewer-position"></span>
+    <button class="btn" id="viewer-next" aria-label="下一张" title="下一张（→）">❯</button>
     <strong id="viewer-title"></strong>
     <button class="btn sm" id="viewer-fit">适应窗口</button>
     <button class="btn sm" id="viewer-actual">100%</button>

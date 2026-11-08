@@ -674,3 +674,69 @@ select:hover { border-color: #3a4252; }
   font-size: 10px; color: #ffb877; white-space: nowrap;
   background: rgba(0,0,0,.6); padding: 1px 5px; border-radius: 3px;
 }
+
+/* 紧凑详情：预览、三个信息页签，各页签最多一个纵向滚动区域。 */
+.detail-head {padding:10px;gap:7px;}
+.detail-title {flex-basis:100%;font-weight:600;}
+.detail-body {display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.detail-body .preview {flex:0 0 auto;height:clamp(140px,26vh,270px);min-height:0;padding:8px;}
+.detail-body .preview img,.detail-body .preview video {max-height:100%;max-width:100%;object-fit:contain;}
+.detail-body .meta {display:flex;flex:1;flex-direction:column;min-height:0;padding:0 12px 10px;overflow:hidden;}
+.detail-tabs {display:flex;gap:5px;padding:10px 0;border-bottom:1px solid var(--line);flex-shrink:0;}
+.detail-tabs .btn {flex:1;padding:0 6px;}
+.detail-tabs .btn.on {color:var(--accent);border-color:var(--accent);background:var(--accent-soft);}
+.detail-tabpanel {min-width:0;overflow-x:hidden;overflow-y:auto;min-height:0;flex:1;padding:10px 0 4px;scrollbar-width:thin;scrollbar-color:transparent transparent;}
+.detail-tabpanel:hover {scrollbar-color:var(--line) transparent;}
+.detail-tabpanel::-webkit-scrollbar {width:5px;}
+.detail-tabpanel::-webkit-scrollbar-thumb {background:transparent;border:0;}
+.detail-tabpanel:hover::-webkit-scrollbar-thumb {background:var(--line);}
+.detail-tabpanel .line {padding:4px 0;border-bottom:0;}
+.detail-tabpanel .line .k {flex-basis:58px;width:58px;}
+.detail-tabpanel .line .v {overflow-wrap:anywhere;}
+.detail-tabpanel .file,.detail-tabpanel .tagbox,.detail-tabpanel .datebox {max-width:100%;min-width:0;}
+.detail-tabpanel .datebox {display:grid;grid-template-columns:minmax(0,1fr) minmax(80px,.7fr);align-items:stretch;}
+.detail-tabpanel .date-picker-field {display:flex;flex-wrap:wrap;min-width:0;}
+.detail-tabpanel input[type=date],.detail-tabpanel input[type=time] {min-width:0;width:100%;}
+.detail-tabpanel .tagbox input {flex:1;min-width:80px;}
+.watermark-status {display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:12px;padding:9px;background:var(--panel-2);border-radius:8px;}
+#viewer-position {color:var(--dim);font-size:12px;min-width:48px;text-align:center;}
+#theme-toggle {width:100%;margin-bottom:8px;}
+:root {color-scheme:dark;}
+:root[data-theme=light] {color-scheme:light;--bg:#f3f5f9;--panel:#ffffff;--panel-2:#f5f7fa;--panel-3:#eaf0f7;--line:#ced7e4;--line-soft:#e5eaf1;--text:#1c293b;--dim:#536579;--dim-2:#6d7d8f;--accent:#3568cc;--accent-soft:rgba(53,104,204,.10);--ok:#16774c;--warn:#976118;--danger:#bf4240;}
+:root[data-theme=light] .topbar,:root[data-theme=light] .viewer-toolbar,:root[data-theme=light] .modal-foot,:root[data-theme=light] .selbar {background:var(--panel);border-color:var(--line);}
+:root[data-theme=light] .photo-viewer,:root[data-theme=light] .preview {background:#e5eaf1;}
+:root[data-theme=light] .nav button.on,:root[data-theme=light] .chip.on,:root[data-theme=light] .selbar b,:root[data-theme=light] .steps .s.on,:root[data-theme=light] .edit-op.on .lb {color:var(--accent);}
+:root[data-theme=light] .btn:hover,:root[data-theme=light] .chip:hover {background:#e2eaf5;color:var(--text);}
+:root[data-theme=light] .btn.primary,:root[data-theme=light] .btn.primary:hover {color:white;}
+:root[data-theme=light] .btn.danger {background:#fff0ef;border-color:#e4b9b7;color:#a52c29;}
+:root[data-theme=light] .warnbox {background:#fff8e8;color:#855f1b;border-color:#e8d6aa;}
+:root[data-theme=light] .tplpreview,:root[data-theme=light] .card,:root[data-theme=light] .src,:root[data-theme=light] .dup-group {background:var(--panel);color:var(--text);}
+:root[data-theme=light] .toast {background:#fff;border-color:var(--line);color:var(--text);}
+:root[data-theme=light] .toast.ok {background:#ecf8f1;color:#216b46;}
+:root[data-theme=light] .toast.err {background:#fff0ef;color:#a52c29;}
+:root[data-theme=light] .pill {background:#edf1f6;border-color:#ced7e4;color:#536579;}
+:root[data-theme=light] .pill.ok {background:#edf9f2;color:#216b46;border-color:#c0ddcc;}
+:root[data-theme=light] .pill.warn {background:#fff6e8;color:#855f1b;border-color:#e8d6aa;}
+:root[data-theme=light] .pill.bad {background:#fff0ef;color:#a52c29;border-color:#e4b9b7;}
+:root[data-theme=light] input[type=date],:root[data-theme=light] input[type=time] {color-scheme:light;}
+:root[data-theme=light] .row,:root[data-theme=light] .list-head,:root[data-theme=light] .hintbar,:root[data-theme=light] .statusbar,:root[data-theme=light] .wm-stage-head,:root[data-theme=light] .wm-stage-foot {background:var(--panel);color:var(--dim);}
+
+.detection-row {display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);min-width:0;}
+.detection-row img {width:94px;height:70px;object-fit:contain;flex-shrink:0;border-radius:6px;background:var(--panel-2);}
+.detection-row>div {flex:1;min-width:0;overflow-wrap:anywhere;}
+.detection-row p {margin:3px 0;color:var(--warn);}
+.detection-row small {color:var(--dim);}
+.detection-row label {flex-shrink:0;}
+.wm-detection {color:var(--warn);display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+
+:root[data-theme=light] .tile .cap,:root[data-theme=light] .rv-item,:root[data-theme=light] .wm-card .ph {background:var(--panel-2);}
+:root[data-theme=light] .tile-quick .btn {background:#fffffff0;color:var(--text);}
+:root[data-theme=light] .wm-sample-chip.on,:root[data-theme=light] .wm-posgrid button.on,:root[data-theme=light] .cand:hover {color:var(--accent);}
+
+.review-tools {display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 18px;border-bottom:1px solid var(--line);background:var(--panel);}
+#review-total {color:var(--dim);font-size:12px;margin-left:auto;}
+.review-more {display:flex;justify-content:center;align-items:center;gap:12px;color:var(--dim);padding:14px;}
+#review-bar {flex-shrink:0;gap:8px;}
+#review-bar .menu-panel {top:auto;bottom:calc(100% + 8px);display:flex;flex-wrap:wrap;gap:8px;}
+.sim-card-actions {display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:8px;}
+.sim-card-actions label {font-size:11px;color:var(--dim);}

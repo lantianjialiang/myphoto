@@ -154,11 +154,11 @@ LEFT JOIN media_files pf ON pf.id = COALESCE(a.primary_file_id,
 pub fn order_clause(sort: &str, order: &str) -> String {
     let dir = if order.eq_ignore_ascii_case("asc") { "ASC" } else { "DESC" };
     match sort {
-        "name" => format!(" ORDER BY pf.file_name {dir}"),
-        "size" => format!(" ORDER BY pf.size_bytes {dir}"),
-        "added" => format!(" ORDER BY a.created_at {dir}"),
-        "trust" => format!(" ORDER BY a.needs_review ASC, a.effective_taken_at {dir}"),
-        _ => format!(" ORDER BY a.effective_taken_at {dir} NULLS LAST, pf.file_name ASC"),
+        "name" => format!(" ORDER BY pf.file_name {dir}, a.id ASC"),
+        "size" => format!(" ORDER BY pf.size_bytes {dir}, a.id ASC"),
+        "added" => format!(" ORDER BY a.created_at {dir}, a.id ASC"),
+        "trust" => format!(" ORDER BY a.needs_review ASC, a.effective_taken_at {dir}, a.id ASC"),
+        _ => format!(" ORDER BY a.effective_taken_at {dir} NULLS LAST, pf.file_name ASC, a.id ASC"),
     }
 }
 
@@ -254,8 +254,12 @@ pub fn list(
 }
 
 pub fn ids(conn: &Connection, filter: &Filter) -> R<Vec<String>> {
+    ordered_ids(conn,filter,"taken","desc")
+}
+
+pub fn ordered_ids(conn: &Connection, filter: &Filter, sort:&str, order:&str) -> R<Vec<String>> {
     let (w, args) = filter.where_clause();
-    let sql = format!("SELECT a.id {FROM}{w} ORDER BY a.effective_taken_at DESC NULLS LAST");
+    let sql = format!("SELECT a.id {FROM}{w}{}",order_clause(sort,order));
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, String>(0))

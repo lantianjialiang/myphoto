@@ -75,6 +75,8 @@ pub struct Config {
     /// 视频也烧水印（需要 ffmpeg.exe；没有就跳过视频）
     pub video: bool,
     pub skip_watermarked: bool,
+    /// 显式开启后才跳过算法疑似项，默认只作提示，避免误判导致漏处理。
+    pub skip_suspected: bool,
 }
 
 impl Default for Config {
@@ -113,6 +115,7 @@ impl Default for Config {
             output_format: "same".into(),
             video: true,
             skip_watermarked: true,
+            skip_suspected: false,
         }
     }
 }
@@ -146,6 +149,10 @@ impl Config {
 // ---------------- 字体 ----------------
 pub fn has_watermark(conn: &rusqlite::Connection, path: &Path) -> Result<bool,String> {
     let (hash,_) = util::sha256_file(path).map_err(|e|e.to_string())?;
+    has_watermark_hash(conn,path,&hash)
+}
+
+pub fn has_watermark_hash(conn:&rusqlite::Connection,path:&Path,hash:&str)->Result<bool,String>{
     let marked: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM watermark_hashes WHERE content_hash=?1)",rusqlite::params![hash],|r|r.get(0)).map_err(|e|e.to_string())?;
     if marked { return Ok(true); }
     // Compatibility with copies generated before watermark tracking was introduced.
@@ -782,6 +789,7 @@ pub fn rotate_image_by(img: RgbaImage, deg: i32) -> RgbaImage {
 pub fn render_for_asset(conn: &rusqlite::Connection, id: &str, src: &Path, img: RgbaImage, cfg: &Config) -> Result<RgbaImage, String> {
     let cfg=asset_config(conn,id,cfg);
     if cfg.skip_watermarked && has_watermark(conn,src)? { return Ok(img); }
+    if cfg.skip_suspected && crate::watermark_detect::analyze_asset(conn,id)?.suspected { return Ok(img); }
     let (taken, source, camera): (Option<String>,Option<String>,Option<String>) = conn.query_row(
         "SELECT effective_taken_at,date_source,camera FROM media_assets WHERE id=?1", rusqlite::params![id],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
@@ -1069,6 +1077,12 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
         let img=if max_side==0 { original.to_rgba8() } else { original.thumbnail(max_side,max_side).to_rgba8() };
         return Ok(json!({"image":format!("data:image/jpeg;base64,{}",base64::engine::general_purpose::STANDARD.encode(encode(&img,"jpg",88)?)),"width":img.width(),"height":img.height(),"font_px":0,"text":"","file_name":file.file_name,"warning":"已有水印：批量处理时跳过，不会叠加","watermarked":true}));
     }
+    let detection=crate::watermark_detect::analyze_asset(&conn,asset_id)?;
+    if cfg.skip_suspected && detection.suspected {
+        let original=crate::orientation::load(&conn,asset_id,&path)?;
+        let img=if max_side==0 {original.to_rgba8()}else{original.thumbnail(max_side,max_side).to_rgba8()};
+        return Ok(json!({"image":format!("data:image/jpeg;base64,{}",base64::engine::general_purpose::STANDARD.encode(encode(&img,"jpg",88)?)),"width":img.width(),"height":img.height(),"font_px":0,"text":"","file_name":file.file_name,"warning":"疑似已有水印：已启用跳过疑似项，批量处理时跳过","watermarked":false,"detection":detection}));
+    }
     let mut img = crate::orientation::load(&conn,asset_id,&path)?.to_rgba8();
     img = rotate_image_by(img, cfg.rotate_image);
     if max_side > 0 && (img.width() > max_side || img.height() > max_side) {
@@ -1079,6 +1093,7 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
     }
     let text = build_text(&cfg, taken.as_deref(), source.as_deref(), &file.file_name, camera.as_deref());
     let mut warning = String::new();
+    if detection.suspected { warning="疑似已有水印（本地文字形状检测）；尚未确认，当前仍会添加水印".into(); }
     if text.is_empty() || (taken.is_none() && cfg.require_date && cfg.text.contains("{date}")) {
         warning = "这张照片没有可靠的拍摄时间，批量执行时会被跳过（可在「待整理」里先指定日期）".into();
     }
@@ -1105,6 +1120,7 @@ pub fn preview(db_path: &Path, asset_id: &str, cfg: &Config, max_side: u32) -> R
         "pos_x": cfg.pos_x,
         "pos_y": cfg.pos_y,
         "warning": warning,
+        "detection": detection,
     }))
 }
 
@@ -1241,6 +1257,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
     let mut errors: Vec<String> = Vec::new();
     let mut skipped_nodate = 0;
     let mut skipped_watermarked = 0;
+    let mut skipped_suspected=0;
     let mut overwritten = 0usize;
     let mut restorable = 0usize;
     let mut skipped_video = 0usize;
@@ -1293,6 +1310,9 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
         }
         if cfg.skip_watermarked && has_watermark(&conn,Path::new(&file.absolute_path))? {
             skipped_watermarked += 1; job.skip(); continue;
+        }
+        if media_type=="image" && cfg.skip_suspected && crate::watermark_detect::analyze_asset(&conn,id).map(|r|r.suspected).unwrap_or(false) {
+            skipped_suspected+=1;job.skip();continue;
         }
         let needs_date = cfg.require_date && cfg.text.contains("{date}") && taken.is_none();
         if needs_date {
@@ -1569,6 +1589,7 @@ pub fn run(db_path: &Path, job: &JobCtl, req: RunRequest) -> Result<(), String> 
     if restorable > 0 {
         msg.push_str(&format!("；其中 {} 张可在「覆盖记录」里一键还原", restorable));
     }
+    if skipped_suspected>0 {msg.push_str(&format!("；疑似已有水印跳过 {}（算法提示，未经人工确认）",skipped_suspected));}
     if skipped_video > 0 {
         if no_ffmpeg {
             msg.push_str(&format!("；跳过视频 {}（未检测到 ffmpeg.exe，视频水印不可用）", skipped_video));

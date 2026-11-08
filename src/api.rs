@@ -313,6 +313,7 @@ fn route(
         ["api", "sources", id, "reveal"] if m == "POST" => Some(api_source_reveal(app, id)),
         ["api", "media"] => Some(api_media_list(app, params)),
         ["api", "media", "batch-date"] if m == "POST" => Some(api_batch_date(app, req)),
+        ["api", "media", "batch-date-source"] if m == "POST" => Some(api_batch_date_source(app, req)),
         ["api", "media", "trash", "plan"] if m == "POST" => Some(api_trash(app, req, false)),
         ["api", "media", "trash", "run"] if m == "POST" => Some(api_trash(app, req, true)),
         ["api", "media", "by-file", id] if m == "GET" => {
@@ -366,6 +367,8 @@ fn route(
         ["api", "edit", "backups", "restore"] if m == "POST" => Some(api_edit_restore(app, req)),
         ["api", "edit", "backups", "drop"] if m == "POST" => Some(api_edit_drop(app, req)),
         ["api", "watermark", "preview"] if m == "POST" => Some(api_wm_preview(app, req)),
+        ["api", "watermark", "detect"] if m == "POST" => Some(api_wm_detect(app, req)),
+        ["api", "watermark", "scope"] if m == "POST" => Some(api_wm_scope(app, req)),
         ["api", "watermark", "run"] if m == "POST" => Some(api_wm_run(app, req)),
         ["api", "watermark", "mark"] if m == "POST" => Some(api_wm_mark(app,req)),
         ["api", "watermark", "rotation"] if m == "POST" => Some(api_wm_rotation(app,req)),
@@ -375,6 +378,7 @@ fn route(
         ["api", "slideshow", "run"] if m == "POST" => Some(api_slideshow_run(app, req)),
         ["api", "slideshow", "formats"] => Some(ok(crate::slideshow::formats())),
         ["api", "review"] => Some(api_review(app, params)),
+        ["api", "review", "ids"] if m == "GET" => Some(api_review_ids(app, params)),
         ["api", "archive", "plan"] if m == "POST" => Some(api_plan(app, req)),
         ["api", "archive", "plans"] => Some(api_plans(app)),
         ["api", "archive", "plans", id] => Some(api_get_plan(app, id)),
@@ -759,7 +763,9 @@ fn api_media_list(app: &Shared, params: &std::collections::HashMap<String, Strin
 fn api_media_ids(app: &Shared, params: &std::collections::HashMap<String, String>) -> Response<Body> {
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     let filter = filter_from(params);
-    match query::ids(&conn, &filter) {
+    let sort=qs(params,"sort").unwrap_or_else(||"taken".into());
+    let order=qs(params,"order").unwrap_or_else(||"desc".into());
+    match query::ordered_ids(&conn, &filter, &sort, &order) {
         Ok(v) => ok(json!(v)),
         Err(e) => json_err(500, &e),
     }
@@ -823,9 +829,43 @@ fn parse_date_input(v: Option<&Value>) -> Result<Option<String>, String> {
     }
 }
 
+fn requested_date(body:&Value)->Result<Option<String>,String>{
+    if body.get("unknown").and_then(Value::as_bool)==Some(true){return Ok(Some(dateinfer::CONFIRMED_UNKNOWN.into()));}
+    parse_date_input(body.get("date"))
+}
+
+fn api_batch_date_source(app:&Shared,req:&mut Request)->Response<Body>{
+    let Some(body)=read_body(req) else{return json_err(400,"请求格式错误")};
+    let ids:Vec<String>=body.get("ids").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    if ids.is_empty(){return json_err(400,"请先选择要确认日期的照片");}
+    let source=body.get("source").and_then(Value::as_str).unwrap_or("");
+    if !["filesystem","recommended"].contains(&source){return json_err(400,"日期来源无效");}
+    let Ok(conn)=open_db(app) else{return json_err(500,"数据库不可用")};
+    let result=(||->Result<Value,String>{
+        let tx=rusqlite::Transaction::new_unchecked(&conn,rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+        let mut updated=0;let mut skipped=0;let mut seen=std::collections::HashSet::new();
+        for id in &ids {
+            if !seen.insert(id){continue;}
+            let date=if source=="filesystem" {
+                assets::primary_file(&tx,id)?.filter(|f|f.mtime_ms>0).and_then(|f|dateinfer::filesystem_candidate(f.mtime_ms)).map(|c|c.value)
+            }else{
+                tx.query_row("SELECT effective_taken_at FROM media_assets WHERE id=?1",params![id],|r|r.get::<_,Option<String>>(0)).optional().map_err(|e|e.to_string())?.flatten()
+            };
+            let Some(date)=date.filter(|d|dateinfer::parse_iso(d).is_some()) else{skipped+=1;continue};
+            let count=tx.execute("UPDATE media_assets SET override_taken_at=?1 WHERE id=?2",params![date,id]).map_err(|e|e.to_string())?;
+            if count==0{skipped+=1;continue;}
+            assets::recompute(&tx,id)?;updated+=1;
+        }
+        tx.commit().map_err(|e|e.to_string())?;
+        db::log_op(&conn,"batch-confirm-date",None,None,None,None,"ok",None,Some(&format!("采用 {source} 确认 {updated} 项，跳过 {skipped} 项")));
+        Ok(json!({"updated":updated,"skipped":skipped}))
+    })();
+    match result{Ok(v)=>ok(v),Err(e)=>json_err(400,&e)}
+}
+
 fn api_set_date(app: &Shared, req: &mut Request, id: &str) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
-    let date = match parse_date_input(body.get("date")) {
+    let date = match requested_date(&body) {
         Ok(d) => d,
         Err(e) => return json_err(400, &e),
     };
@@ -845,7 +885,7 @@ fn api_batch_date(app: &Shared, req: &mut Request) -> Response<Body> {
     if ids.is_empty() {
         return json_err(400, "没有选择媒体");
     }
-    let date = match parse_date_input(body.get("date")) {
+    let date = match requested_date(&body) {
         Ok(d) => d,
         Err(e) => return json_err(400, &e),
     };
@@ -1433,17 +1473,31 @@ fn api_hash(app: &Shared, req: &mut Request) -> Response<Body> {
     ok(json!({"job_id": job}))
 }
 
+fn review_condition(mode:&str)->&'static str{
+    match mode {
+        "unknown"=>"a.needs_review=1 AND a.effective_taken_at IS NULL",
+        "low"=>"a.needs_review=1 AND a.effective_taken_at IS NOT NULL AND a.confidence IN ('low','medium')",
+        "conflict"=>"a.needs_review=1 AND a.review_reason LIKE '%冲突%'",
+        _=>"a.needs_review=1",
+    }
+}
+fn api_review_ids(app:&Shared,params:&std::collections::HashMap<String,String>)->Response<Body>{
+    let Ok(conn)=open_db(app) else{return json_err(500,"数据库不可用")};
+    let condition=review_condition(params.get("mode").map(String::as_str).unwrap_or("all"));
+    let result=(||->Result<Vec<String>,String>{
+        let mut st=conn.prepare(&format!("SELECT a.id FROM media_assets a WHERE {condition} ORDER BY a.effective_taken_at DESC,a.id")).map_err(|e|e.to_string())?;
+        let rows=st.query_map([],|r|r.get(0)).map_err(|e|e.to_string())?;
+        rows.collect::<Result<_,_>>().map_err(|e|e.to_string())
+    })();
+    match result{Ok(ids)=>ok(json!(ids)),Err(e)=>json_err(500,&e)}
+}
+
 fn api_review(app: &Shared, params: &std::collections::HashMap<String, String>) -> Response<Body> {
     let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
     let mode = qs(params, "mode").unwrap_or_else(|| "all".into());
     let offset: i64 = qs(params, "offset").and_then(|v| v.parse().ok()).unwrap_or(0);
     let limit: i64 = qs(params, "limit").and_then(|v| v.parse().ok()).unwrap_or(60).clamp(1, 300);
-    let cond = match mode.as_str() {
-        "unknown" => "a.effective_taken_at IS NULL".to_string(),
-        "low" => "a.effective_taken_at IS NOT NULL AND a.confidence IN ('low','medium')".to_string(),
-        "conflict" => "a.effective_taken_at IS NOT NULL AND a.review_reason LIKE '%冲突%'".to_string(),
-        _ => "a.needs_review=1".to_string(),
-    };
+    let cond = review_condition(&mode);
     let total: i64 = conn
         .query_row(&format!("SELECT count(*) FROM media_assets a WHERE {cond}"), [], |r| r.get(0))
         .unwrap_or(0);
@@ -1454,7 +1508,7 @@ fn api_review(app: &Shared, params: &std::collections::HashMap<String, String>) 
                 (SELECT file_name FROM media_files n WHERE n.asset_id=a.id
                  ORDER BY CASE n.availability WHEN 'online' THEN 0 ELSE 1 END, n.rowid LIMIT 1) AS fname
          FROM media_assets a WHERE {cond}
-         ORDER BY a.effective_taken_at IS NOT NULL, a.effective_taken_at DESC LIMIT ?1 OFFSET ?2"
+         ORDER BY a.effective_taken_at IS NOT NULL, a.effective_taken_at DESC, a.id LIMIT ?1 OFFSET ?2"
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -2130,6 +2184,37 @@ fn api_wm_preview(app: &Shared, req: &mut Request) -> Response<Body> {
     match watermark::preview(&app.paths.db_path, id, &cfg, max_side) {
         Ok(v) => ok(v),
         Err(e) => json_err(400, &e),
+    }
+}
+
+fn api_wm_scope(app:&Shared,req:&mut Request)->Response<Body>{
+    let Some(body)=read_body(req) else{return json_err(400,"请求格式错误")};
+    let Some(ids)=body.get("ids").and_then(Value::as_array) else{return json_err(400,"请提供明确的所选项目")};
+    let video=body.get("video").and_then(Value::as_bool).unwrap_or(false);
+    let Ok(conn)=open_db(app) else{return json_err(500,"数据库不可用")};
+    let result=(||->Result<Vec<String>,String>{
+        let mut st=conn.prepare("SELECT media_type FROM media_assets WHERE id=?1").map_err(|e|e.to_string())?;
+        let mut seen=std::collections::HashSet::new();let mut out=Vec::new();
+        for id in ids.iter().filter_map(Value::as_str){
+            if !seen.insert(id){continue;}
+            let kind:Option<String>=st.query_row(params![id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            if matches!(kind.as_deref(),Some("image")) || (video && matches!(kind.as_deref(),Some("video"))){out.push(id.to_owned());}
+        }
+        Ok(out)
+    })();
+    match result{Ok(ids)=>ok(json!(ids)),Err(e)=>json_err(500,&e)}
+}
+
+fn api_wm_detect(app:&Shared,req:&mut Request)->Response<Body>{
+    let Some(body)=read_body(req) else{return json_err(400,"请求格式错误")};
+    let Some(id)=body.get("id").and_then(Value::as_str).filter(|id|!id.is_empty()) else{return json_err(400,"请明确选择照片")};
+    let Ok(conn)=open_db(app) else{return json_err(500,"数据库不可用")};
+    match crate::watermark_detect::analyze_asset(&conn,id){
+        Ok(result)=>{
+            let mut value=serde_json::to_value(result).unwrap_or(Value::Null);
+            value["file_name"]=assets::primary_file(&conn,id).ok().flatten().map(|f|json!(f.file_name)).unwrap_or(Value::Null);
+            ok(value)
+        },Err(e)=>json_err(400,&e),
     }
 }
 

@@ -35,6 +35,7 @@ mod util;
 mod watch;
 mod window_lifetime;
 mod watermark;
+mod watermark_detect;
 mod web;
 
 use std::path::{Path, PathBuf};

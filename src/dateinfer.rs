@@ -5,6 +5,7 @@
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
+pub const CONFIRMED_UNKNOWN:&str="__confirmed_unknown__";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Candidate {
@@ -47,6 +48,7 @@ pub fn iso(dt: NaiveDateTime) -> String {
 pub fn parse_iso(s: &str) -> Option<NaiveDateTime> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
         .ok()
+        .or_else(||NaiveDateTime::parse_from_str(s,"%Y-%m-%dT%H:%M").ok())
         .or_else(|| NaiveDateTime::parse_from_str(&format!("{s}T00:00:00"), "%Y-%m-%dT%H:%M:%S").ok())
 }
 
@@ -333,6 +335,9 @@ pub struct Selection {
 
 /// 从候选集中选出有效日期，并判定是否需要人工确认。
 pub fn select(candidates: &[Candidate], override_value: Option<&str>) -> Selection {
+    if override_value==Some(CONFIRMED_UNKNOWN) {
+        return Selection{effective:None,source:Some("override".into()),confidence:"high".into(),precision:"none".into(),needs_review:false,reason:None};
+    }
     if let Some(ov) = override_value {
         if !ov.is_empty() {
             return Selection {
@@ -546,5 +551,20 @@ mod tests {
         let s = select(&cands, Some("2019-01-02T00:00:00"));
         assert_eq!(s.source.as_deref(), Some("override"));
         assert!(!s.needs_review);
+    }
+
+    #[test]
+    fn confirmed_unknown_stays_out_of_review() {
+        let cands = filesystem_candidate(1_700_000_000_000).into_iter().collect::<Vec<_>>();
+        let s = select(&cands, Some(CONFIRMED_UNKNOWN));
+        assert!(s.effective.is_none());
+        assert_eq!(s.source.as_deref(), Some("override"));
+        assert!(!s.needs_review);
+    }
+
+    #[test]
+    fn native_time_input_can_omit_zero_seconds() {
+        assert_eq!(iso(parse_iso("2024-09-16T13:33").unwrap()), "2024-09-16T13:33:00");
+        assert!(parse_iso("2024-02-30T13:33").is_none());
     }
 }

@@ -46,7 +46,7 @@ function fmtDur(ms) {
   return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(ss).padStart(2, '0');
 }
 function fmtTaken(v, precision) {
-  if (!v) return '日期待确认';
+  if (!v) return '日期未知';
   const d = v.slice(0, 10).replace(/-/g, '/');
   if (precision === 'second' || precision === 'minute') return d + ' ' + v.slice(11, 16);
   if (precision === 'month') return v.slice(0, 7).replace('-', '/');
@@ -153,10 +153,13 @@ const VIEW_TITLES = { library: '媒体库', timeline: '时间线', review: '待�
 
 function switchView(v) {
   if (v === 'edit') { openLibraryEditor(); return; }
+  if (v !== S.view) { closeDetail(); if (!$('#photo-viewer').hidden) closeViewer(); }
   S.view = v;
+  $$('.library-menu[open]').forEach(menu=>menu.open=false);
   $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
   $$('.view').forEach(el => el.classList.toggle('on', el.id === 'view-' + v));
   $('.topbar').style.display = v === 'library' ? '' : 'none';
+  $('.topbar').hidden = v !== 'library';
   $('#status-text').textContent = VIEW_TITLES[v] || '';
   updateSelBar();
   if (v === 'library') layout();
@@ -176,6 +179,7 @@ async function loadState() {
   try {
     S.state = await apiGet('/api/state');
     S.settings = S.state.settings || {};
+    if (!themeSaving) applyTheme(S.settings.theme || document.documentElement.dataset.theme || 'dark');
     syncOutputFields();
     renderRail();
   } catch (e) { toast(e.message, 'err'); }
@@ -374,7 +378,7 @@ function createNode() {
       const rotate=ev.target.closest('[data-quick-rotate]');
       if(rotate){quickRotate([it.id],rotate.dataset.quickRotate);return;}
       if (ev.target.classList.contains('check') || ev.ctrlKey || ev.metaKey) toggleSel(it.id);
-      else openDetail(it.id, true);
+      else queueDetail(it.id);
     });
   } else {
     d.className = 'row';
@@ -383,9 +387,14 @@ function createNode() {
     d.addEventListener('click', ev => {
       const it = G.items.get(Number(d.dataset.idx));
       if (!it) return;
-      if (ev.ctrlKey || ev.metaKey) toggleSel(it.id); else openDetail(it.id, true);
+      if (ev.ctrlKey || ev.metaKey) toggleSel(it.id); else queueDetail(it.id);
     });
   }
+  d.addEventListener('dblclick',ev=>{
+    if(ev.ctrlKey || ev.metaKey || ev.target.closest('button,.check')) return;
+    clearTimeout(detailClickTimer);
+    const it=G.items.get(Number(d.dataset.idx)); if(it) openDetail(it.id,true);
+  });
   return d;
 }
 
@@ -571,7 +580,7 @@ function toggleSel(id) {
 function updateSelBar() {
   const n = S.sel.size;
   // 只有能勾选媒体的视图才显示批量操作条，否则切到设置/任务中心会留一条悬空的操作栏
-  const selectable = ['library', 'review', 'dupes', 'similar'].includes(S.view);
+  const selectable = S.view === 'library';
   $('#selbar').hidden = n === 0 || !selectable;
   $('#sel-count').textContent = '已选 ' + n + ' 项';
   $('#sel-all').textContent = S.filter.total ? `全选筛选结果（${S.filter.total}）` : '全选当前筛选结果';
@@ -581,6 +590,7 @@ function updateSelBar() {
 
 /* ============================ 详情 ============================ */
 async function openDetail(id, fullscreen = false) {
+  clearTimeout(detailClickTimer);
   S.detailId = id;
   $('.app').classList.add('with-detail');
   $('#detail').hidden = false;
@@ -592,13 +602,16 @@ async function openDetail(id, fullscreen = false) {
     renderDetail(a);
     if (fullscreen) openMediaViewer(a);
   } catch (e) {
+    if (S.detailId !== id) return;
     $('#d-body').innerHTML = `<div class="skeleton">${esc(e.message)}</div>`;
   }
 }
 function closeDetail() {
+  clearTimeout(detailClickTimer);
   S.detailId = null;
   $('.app').classList.remove('with-detail');
   $('#detail').hidden = true;
+  $('#d-body').replaceChildren();
   setTimeout(layout, 60);
 }
 
@@ -650,7 +663,7 @@ function renderDetail(a) {
         <span class="pill ${a.confidence === 'high' ? 'ok' : a.confidence === 'none' ? 'bad' : 'warn'}">${esc(confLabel(a.confidence))}</span>
         <span class="pill">${esc(srcLabel(a.date_source))}</span></div></div>
       ${a.needs_review ? `<div class="line"><div class="k">待确认</div><div class="v" style="color:#f2a93b">${esc(a.review_reason || '日期需要人工确认')}</div></div>` : ''}
-      ${a.override_taken_at ? `<div class="line"><div class="k">人工覆盖</div><div class="v">${esc(String(a.override_taken_at).replace('T', ' '))}
+      ${a.override_taken_at ? `<div class="line"><div class="k">人工确认</div><div class="v">${esc(a.override_taken_at==='__confirmed_unknown__'?'已确认日期未知':String(a.override_taken_at).replace('T', ' '))}
         <button class="btn sm" data-act="clear-date">清除覆盖</button></div></div>` : ''}
       <div class="line"><div class="k">类型</div><div class="v">${isVideo ? '视频' : '照片'} · ${esc(ext.toUpperCase())}</div></div>
       <div class="line"><div class="k">尺寸</div><div class="v">${a.width && a.height ? a.width + ' × ' + a.height : '—'}${isVideo ? ' · ' + fmtDur(a.duration_ms) : ''}</div></div>
@@ -722,6 +735,7 @@ function renderDetail(a) {
       </div>
     </div>`;
   installDatePickers($('#d-body'));
+  organizeDetail(a);
 
   const v = $('#d-video');
   if (v) {
@@ -737,7 +751,6 @@ function renderDetail(a) {
   }
 
   $('#d-body').onclick = async ev => {
-    if (ev.target.id === 'd-img') { openMediaViewer(a, ev.target.dataset.fileId || primary.id); return; }
     const t = ev.target.closest('button');
     const un = ev.target.closest('[data-untag]');
     if (un) {
@@ -797,7 +810,7 @@ function renderDetail(a) {
         if (date.length === 10) date += 'T00:00:00';
       }
       try {
-        await api('/api/media/' + a.id + '/date', { method: 'POST', body: { date } });
+        await api('/api/media/' + a.id + '/date', { method: 'POST', body: { date, unknown:act==='set-date-null' } });
         toast('已保存', 'ok');
         openDetail(a.id); refreshAfterChange();
       } catch (e) { toast(e.message, 'err'); }
@@ -848,6 +861,9 @@ function renderDetail(a) {
       } catch (e) { toast(e.message, 'err'); }
     }
   };
+  $('#d-preview').ondblclick=ev=>{
+    if(ev.target.id==='d-img') openMediaViewer(a,ev.target.dataset.fileId || primary.id);
+  };
 
   // 标签输入框：回车即添加，并补全已有标签
   const tagInput = $('#d-tag-input');
@@ -872,22 +888,29 @@ function refreshAfterChange() {
 }
 
 /* ============================ 待整理 ============================ */
-async function loadReview() {
+const REVIEW={gen:0,items:[],total:0,busy:false,processing:false};
+async function loadReview(append=false) {
+  if(append && REVIEW.busy)return;
+  const gen=++REVIEW.gen;REVIEW.busy=true;
+  if(!append){REVIEW.items=[];S.reviewSel.clear();}
   const box = $('#review-list');
-  box.innerHTML = '<div class="skeleton">读取中…</div>';
+  if(!append)box.innerHTML = '<div class="skeleton">读取中…</div>';
   try {
-    const r = await apiGet('/api/review', { mode: S.reviewMode, limit: 80 });
-    if (!r.items.length) {
+    const r = await apiGet('/api/review', { mode: S.reviewMode, limit: 80,offset:REVIEW.items.length });
+    if(gen!==REVIEW.gen)return;
+    REVIEW.items=append?REVIEW.items.concat(r.items):r.items;REVIEW.total=r.total;
+    $('#review-total').textContent='共 '+r.total+' 项待确认';
+    if (!REVIEW.items.length) {
       box.innerHTML = `<div class="empty" style="position:static"><div class="empty-ico">✓</div>
         <h3>没有需要确认的项目</h3><p>当前筛选下的日期都有可靠来源。</p></div>`;
       $('#review-bar').hidden = true;
+      updateReviewBar();
       return;
     }
-    S.reviewSel.clear();
-    box.innerHTML = r.items.map(it => {
-      const cands = (it.candidates || []).filter(c => c.source !== 'filesystem' || !it.taken_at);
-      return `<div class="rv-item" data-id="${esc(it.id)}">
-        <input type="checkbox" data-pick="${esc(it.id)}" style="width:15px;height:15px">
+    box.innerHTML = REVIEW.items.map(it => {
+      const cands = it.candidates || [];
+      return `<div class="rv-item ${S.reviewSel.has(it.id)?'sel':''}" data-id="${esc(it.id)}">
+        <input type="checkbox" data-pick="${esc(it.id)}" style="width:15px;height:15px" ${S.reviewSel.has(it.id)?'checked':''}>
         <div class="rv-thumb">${it.media_type === 'video'
           ? `<img src="${thumbUrl(it, 'poster')}" onerror="this.remove()">`
           : `<img src="${thumbUrl(it, 256)}" onerror="this.remove()">`}</div>
@@ -902,24 +925,26 @@ async function loadReview() {
         </div>
         <div class="rv-actions"><button class="btn sm" data-open="${esc(it.id)}">详情</button></div>
       </div>`;
-    }).join('') + `<div class="skeleton">显示 ${r.items.length} / 共 ${r.total} 项</div>`;
+    }).join('') + `<div class="review-more">已加载 ${REVIEW.items.length} / 共 ${r.total} 项 ${REVIEW.items.length<r.total?'<button class="btn sm" data-review-more="1">加载更多</button>':''}</div>`;
     $('#review-bar').hidden = false;
     updateReviewBar();
   } catch (e) {
-    box.innerHTML = `<div class="skeleton">${esc(e.message)}</div>`;
-  }
+    if(gen===REVIEW.gen)box.innerHTML = `<div class="skeleton">${esc(e.message)}</div>`;
+  }finally{if(gen===REVIEW.gen)REVIEW.busy=false;}
 }
 function updateReviewBar() {
   $('#review-count').textContent = '已选 ' + S.reviewSel.size + ' 项';
+  ['review-filesystem','review-recommended','review-apply','review-unknown'].forEach(id=>$('#'+id).disabled=!S.reviewSel.size || REVIEW.processing);
 }
 $('#review-list').addEventListener('click', async ev => {
-  const t = ev.target;
-  if (t.dataset.open) { openDetail(t.dataset.open, true); return; }
+  const t = ev.target.closest('[data-open],[data-use],[data-review-more]');if(!t)return;
+  if(t.dataset.reviewMore){loadReview(true);return;}
+  if (t.dataset.open) { openDetail(t.dataset.open); return; }
   if (t.dataset.use) {
     try {
       await api('/api/media/' + t.dataset.id + '/date', { method: 'POST', body: { date: t.dataset.use } });
       toast('日期已确认', 'ok');
-      loadReview(); loadState();
+      await Promise.all([loadReview(),loadState(),loadFacets()]);
     } catch (e) { toast(e.message, 'err'); }
   }
 });
@@ -940,16 +965,16 @@ $('#review-apply').addEventListener('click', async () => {
   try {
     const r = await api('/api/media/batch-date', { method: 'POST', body: { ids, date } });
     toast(`已更新 ${r.updated} 项`, 'ok');
-    loadReview(); loadState(); loadFacets();
+    await Promise.all([loadReview(),loadState(),loadFacets()]);
   } catch (e) { toast(e.message, 'err'); }
 });
 $('#review-unknown').addEventListener('click', async () => {
   const ids = Array.from(S.reviewSel);
   if (!ids.length) return toast('请先勾选条目', 'err');
   try {
-    const r = await api('/api/media/batch-date', { method: 'POST', body: { ids, date: null } });
-    toast(`已标记 ${r.updated} 项为未知`, 'ok');
-    loadReview(); loadState();
+    const r = await api('/api/media/batch-date', { method: 'POST', body: { ids, date: null,unknown:true } });
+    toast(`已确认 ${r.updated} 项日期未知`, 'ok');
+    await Promise.all([loadReview(),loadState(),loadFacets()]);
   } catch (e) { toast(e.message, 'err'); }
 });
 
@@ -1024,6 +1049,7 @@ async function loadSimilar() {
         <span>最大差异 ${g.max_distance}/64</span>
         <span class="sp"></span>
         <button class="btn sm" data-sim-star="${gi}">全部收藏</button>
+        <button class="btn sm danger" data-sim-delete-selected="${gi}">删除本组勾选项…</button>
       </div>
       <div class="sim-items">
         ${g.items.map(it => `<div class="sim-item" data-open="${esc(it.id)}">
@@ -1036,6 +1062,7 @@ async function loadSimilar() {
             <span class="n" title="${esc(it.file_name || '')}">${esc(it.file_name || '')}</span>
             <span class="d">${esc(fmtTaken(it.taken_at))} · ${fmtSize(it.size_bytes)}</span>
             <span class="d">差异 ${it.distance}/64</span>
+            <div class="sim-card-actions"><label><input type="checkbox" data-sim-pick="${esc(it.id)}"> 选择</label><button class="btn sm danger" data-sim-delete="${esc(it.id)}">删除这张…</button></div>
           </div>
         </div>`).join('')}
       </div>
@@ -1046,6 +1073,11 @@ async function loadSimilar() {
   }
 }
 $('#similar-list').addEventListener('click', async ev => {
+  const remove=ev.target.closest('[data-sim-delete]');
+  if(remove){openDeletePhotos([remove.dataset.simDelete]).catch(e=>toast(e.message,'err'));return;}
+  const removeSelected=ev.target.closest('[data-sim-delete-selected]');
+  if(removeSelected){const group=removeSelected.closest('.sim-group');const ids=$$('input[data-sim-pick]:checked',group).map(e=>e.dataset.simPick);openDeletePhotos(ids).catch(e=>toast(e.message,'err'));return;}
+  if(ev.target.closest('.sim-card-actions'))return;
   const star = ev.target.closest('[data-sim-star]');
   if (star) {
     const groups = $('#similar-list')._groups || [];
@@ -1059,7 +1091,7 @@ $('#similar-list').addEventListener('click', async ev => {
     return;
   }
   const item = ev.target.closest('[data-open]');
-  if (item) openDetail(item.dataset.open, true);
+  if (item) queueDetail(item.dataset.open);
 });
 $('#btn-sim-hash').addEventListener('click', async () => {
   try {
@@ -1224,6 +1256,8 @@ function syncRunning() {
     loadState(); loadFacets(); loadSources();
     if (S.view === 'library') loadMedia(false);
     if (S.view === 'dupes') loadDupes();
+    if (S.view === 'similar') loadSimilar();
+    if (S.view === 'review') loadReview();
     if (S.detailId) openDetail(S.detailId);
   }
 }
@@ -1399,6 +1433,7 @@ function renderSettings() {
   const s = S.settings || {};
   const st = S.state || {};
   $('#settings-body').innerHTML = `
+<div class="card"><h3>外观</h3><label>主题 <select id="set-theme"><option value="dark">深色</option><option value="light">浅色</option></select></label></div>
 <div class="card"><h3>便携存储与统一输出</h3><p>数据库、设置和预览缓存保存在程序目录的 data 下；所有输出和原件备份保存在 exports 的各自子目录。退出程序后，复制整个程序文件夹即可迁移。外部媒体源仍从原位置读取。</p><div class="kv"><span>程序目录</span><b class="mono">${esc(st.program_dir || '')}</b></div><div class="field"><label>输出目录（只能选择程序目录内的文件夹，也可填写 exports 等相对路径）</label><div class="row-actions"><input id="set-output-root" type="text" value="${esc(outputRoot())}" style="flex:1"><button class="btn" id="set-output-browse">浏览目录…</button></div></div><p id="set-output-summary">${esc(outputRoot())}</p><button class="btn primary" id="set-output-save">保存输出位置</button></div>
 
     <div class="card">
@@ -1471,6 +1506,8 @@ function renderSettings() {
       <div class="kv"><span>去重依据</span><b>完整文件 SHA-256</b></div>
     </div>`;
 
+  $('#set-theme').value=document.documentElement.dataset.theme || 'dark';
+  $('#set-theme').onchange=e=>setTheme(e.target.value);
   $('#set-output-browse').onclick = () => pickInto('#set-output-root');
   $('#set-output-save').onclick = async () => { try { S.settings = await api('/api/settings',{method:'POST',body:{output_root:$('#set-output-root').value.trim()}}); syncOutputFields(); $('#set-output-summary').textContent = outputRoot(); toast('输出位置已保存，所有功能自动使用','ok'); } catch(e) { toast(e.message,'err'); } };
   const upd = () => { $('#tpl-preview').textContent = tplPreview($('#set-template').value); };
@@ -1620,7 +1657,7 @@ function closeModal() {
 }
 function confirmDialog(title, text, onOk) {
   modal(`<div class="modal-head"><h3>${esc(title)}</h3></div>
-    <div class="modal-body"><p style="white-space:pre-wrap;line-height:1.7;color:#c3cbd9;margin:0">${text}</p></div>
+    <div class="modal-body"><p style="white-space:pre-wrap;line-height:1.7;color:var(--text);margin:0">${text}</p></div>
     <div class="modal-foot"><button class="btn" id="cf-no">取消</button>
     <button class="btn primary" id="cf-yes">确认</button></div>`, { narrow: true });
   $('#cf-no').onclick = closeModal;
@@ -1794,7 +1831,7 @@ $('#f-clear').addEventListener('click', () => {
   S.filter = {};
   $('#q').value = '';
   $$('.filters select').forEach(s => { s.value = ''; });
-  $$('.filters .chip').forEach(c => c.classList.remove('on'));
+  $$('.topbar .chip').forEach(c => c.classList.remove('on'));
   loadMedia(true);
 });
 $('#sort').addEventListener('change', e => { S.sort = e.target.value; loadMedia(true); });
@@ -2177,7 +2214,7 @@ $('#tl-today').addEventListener('click', () => {
 });
 $('#tl-body').addEventListener('click', e => {
   const el = e.target.closest('.tl-item[data-id]');
-  if (el) openDetail(el.dataset.id, true);
+  if (el) queueDetail(el.dataset.id);
 });
 window.addEventListener('resize', debounce(() => { if (S.view === 'timeline') tlRender(); }, 220));
 
@@ -2247,6 +2284,7 @@ function wmWriteUI() {
   $('#wm-rotate').value = c.rotate;
   $('#wm-rotimg').value = String(c.rotate_image || 0);
   $('#wm-known-skip').checked = c.skip_watermarked !== false;
+  $('#wm-suspect-skip').checked = !!c.skip_suspected;
   $('#wm-datefmt').value = c.date_format || '%Y-%m-%d';
   $('#wm-text').value = c.text || '{date}';
   $('#wm-custom').value = c.custom || '';
@@ -2295,6 +2333,7 @@ function wmReadUI() {
   c.rotate = Number($('#wm-rotate').value);
   c.rotate_image = Number($('#wm-rotimg').value) || 0;
   c.skip_watermarked = $('#wm-known-skip').checked;
+  c.skip_suspected = $('#wm-suspect-skip').checked;
   c.date_format = $('#wm-datefmt').value.trim() || '%Y-%m-%d';
   c.text = $('#wm-text').value;
   c.custom = $('#wm-custom').value;
@@ -2307,20 +2346,36 @@ function wmReadUI() {
 }
 
 function wmScope() {
-  const sel = $('#wm-scope-mode').value === 'filtered' ? 0 : S.sel.size;
-  return sel ? { ids: Array.from(S.sel), count: sel, label: `已选 ${sel} 项` }
-             : { ids: null, count: S.filter.total || 0, label: `当前筛选 ${S.filter.total || 0} 项` };
+  return WM.scope || {ids:[],count:0,label:'正在读取范围…'};
 }
 
-function wmUpdateScope() {
-  const s = wmScope();
-  $('#wm-scope').textContent = '范围：' + s.label;
+async function wmUpdateScope() {
+  const request=WM.scopeGeneration=(WM.scopeGeneration || 0)+1;
+  const mode=$('#wm-scope-mode').value,selected=Array.from(S.sel),video=wmCfg().video!==false;
+  WM.scope={ids:[],count:0,label:'正在读取范围…'};$('#wm-scope').textContent=WM.scope.label;$('#wm-run').disabled=true;
+  WM.gen++;WM.samples=[];wmRenderSampleChips();$('#wm-previews').innerHTML='<div class="wm-empty">正在读取当前范围…</div>';
+  try{
+    let ids;
+    if(mode==='selected'){
+      ids=await api('/api/watermark/scope',{method:'POST',body:{ids:selected,video}});
+    }else{
+      const params=filterParams();
+      if(!video && params.media_type==='video')ids=[];
+      else{if(!video)params.media_type='image';ids=await apiGet('/api/media/ids',params);}
+    }
+    if(request!==WM.scopeGeneration)return;
+    const label=mode==='selected'?(selected.length?'媒体库所选可处理项目 '+ids.length+' 项':'未选择照片，请返回媒体库选择'):'当前筛选可处理项目 '+ids.length+' 项';
+    WM.scope={ids,count:ids.length,label};$('#wm-scope').textContent='范围：'+label;$('#wm-run').disabled=!ids.length;
+  }catch(e){if(request===WM.scopeGeneration){WM.scope={ids:[],count:0,label:'范围读取失败，请重新选择'};$('#wm-scope').textContent=WM.scope.label;toast(e.message,'err');}}
 }
 
 /** 覆盖原图模式：不需要输出目录/命名模板，并且把格式锁成原格式 */
 function wmSyncMode() {
   const overwrite = $('#wm-mode').value === 'overwrite';
   $('#wm-backup-row').hidden = !overwrite;
+  $('#wm-backups').hidden = !overwrite;
+  $('#wm-out-row').hidden = overwrite;
+  $('#wm-mode-help').textContent=overwrite?'直接修改原文件。默认先备份，可通过“还原原图备份”撤销；备份保存在程序输出目录的 backups 下。':'保留原文件，生成的新照片保存到上面的副本位置。此模式不需要原图备份。';
   $('#wm-warn').hidden = !overwrite;
   $('#wm-out').disabled = overwrite;
   $('#wm-pick').disabled = overwrite;
@@ -2377,7 +2432,7 @@ async function loadWatermark() {
   }
   if (!WM.presets.length) await wmLoadPresets();
   wmWriteUI();
-  wmUpdateScope();
+  await wmUpdateScope();
   wmSyncMode();
   await wmPickSamples();
   wmRefreshPreviews();
@@ -2411,11 +2466,15 @@ async function wmLoadPresets() {
 }
 
 async function wmPickSamples() {
+  const request = WM.scopeGeneration;
+  // 先废弃旧预览，避免快速切换范围时旧样片覆盖当前范围。
+  WM.gen++;
   try {
     const scope = wmScope();
     const r = scope.ids
       ? { items: await Promise.all(scope.ids.slice(0, 12).map(id => apiGet('/api/media/' + id))) }
       : await apiGet('/api/media', filterParams({ limit: 400, media_type: 'image' }));
+    if (request !== WM.scopeGeneration) return;
     const items = (r.items || []).filter(i => i.media_type === 'image' && i.width && i.height);
     WM.gen++;
     if (!items.length) { WM.samples = []; wmRenderSampleChips(); return; }
@@ -2430,7 +2489,7 @@ async function wmPickSamples() {
     add(items[0], '最近');
     WM.samples = picked.slice(0, 3);
     wmRenderSampleChips();
-  } catch (e) { toast(e.message, 'err'); }
+  } catch (e) { if (request === WM.scopeGeneration) toast(e.message, 'err'); }
 }
 
 /** 自由定位：按预览图的实际显示尺寸算出水印框的屏幕位置 */
@@ -2557,7 +2616,7 @@ async function wmRefreshPreviews() {
   const box = $('#wm-previews');
   box.classList.toggle('free', (wmCfg().position || '') === 'free');
   if (!WM.samples.length) {
-    box.innerHTML = '<div class="wm-empty">没有可预览的照片。先在「媒体源」里扫描照片。</div>';
+    box.innerHTML = '<div class="wm-empty">'+esc(wmScope().label)+'。当前范围没有可预览的照片。</div>';
     return;
   }
   if (WM.loading) { wmSchedulePreview(); return; }
@@ -2593,6 +2652,7 @@ async function wmRefreshPreviews() {
             r.rotate_image ? ` · 手动 ${r.rotate_image}°` : ''}</span>
           ${isFree && r.block ? `<span>位置 <b>${Number(cfg.pos_x).toFixed(1)}%, ${Number(cfg.pos_y).toFixed(1)}%</b></span>` : ''}
           ${r.warning ? `<span class="warn-line">${esc(r.warning)}</span>` : ''}
+          ${r.detection?.suspected ? `<span class="wm-detection">本地检测特征分 ${r.detection.score}/100 <button class="btn sm" data-confirm-watermark="${esc(s.item.id)}">确认为已有水印</button></span>` : ''}
         </div>`;
       if (isFree && r.block) wmBindDrag(card, r, cfg);
     } catch (e) {
@@ -3676,6 +3736,8 @@ async function openDeletePhotos(ids, fileIds = null) {
           toast(job.message || '删除完成', job.failed ? 'err' : 'ok');
           await loadState(); await loadFacets(); await loadMedia(false); loadJobs();
           if (S.view === 'dupes') await loadDupes();
+          if (S.view === 'similar') await loadSimilar();
+          if (S.view === 'review') await loadReview();
           return;
         }
         await new Promise(resolve=>setTimeout(resolve,500));
@@ -3701,7 +3763,7 @@ $('#wm-horizontal').addEventListener('click', () => {
   wmCfg().rotate = 0; wmWriteUI(); wmSchedulePreview();
 });
 $('#wm-known-skip').addEventListener('change', () => { wmReadUI(); wmSchedulePreview(); });
-$('#wm-scope-mode').addEventListener('change', async () => { wmUpdateScope(); await wmPickSamples(); wmSchedulePreview(); });
+$('#wm-scope-mode').addEventListener('change', async () => { await wmUpdateScope(); await wmPickSamples(); wmSchedulePreview(); });
 $('#wm-previews').addEventListener('change', async e => {
   const id = e.target.dataset.wmRotation;
   if (!id) return;
@@ -3719,10 +3781,10 @@ $('#sel-watermark-mark').addEventListener('click', () => {
 $('#src-list').addEventListener('click',async e=>{const id=e.target.dataset.browseExclude;if(!id)return;const input=$('[data-excludes="'+CSS.escape(id)+'"]');const path=await pickFolder();if(path&&input&&input.isConnected)input.value=[input.value.trim(),path].filter(Boolean).join('\n');});
 
 /* ============================ 全屏照片与水印效果 ============================ */
-const PV = { gen:0, scale:1, fit:true, focus:null, source:null };
+const PV = { gen:0, scale:1, fit:true, focus:null, source:null, ids:[],index:0,kind:'media',navBusy:false,navRequest:0 };
 function viewerOpen(title, src, video = false) {
   const root=$('#photo-viewer');
-  PV.gen++; PV.focus=document.activeElement; PV.fit=true; PV.source=src;
+  PV.gen++; if(root.hidden)PV.focus=document.activeElement; PV.fit=true; PV.source=src;
   root.hidden=false; $('#viewer-title').textContent=title; $('#viewer-status').textContent='正在加载…';
   $('#viewer-info').hidden=false;
   const media=document.createElement(video ? 'video' : 'img');
@@ -3730,6 +3792,7 @@ function viewerOpen(title, src, video = false) {
   else { media.alt=title; media.onload=()=>{viewerResize();$('#viewer-status').textContent='滚轮缩放，放大后可滚动查看细节；Esc 返回';}; }
   media.onerror=()=>{$('#viewer-status').textContent='预览加载失败，请检查文件是否在线或解码器是否可用';};
   media.src=src; $('#viewer-canvas').replaceChildren(media); $('#viewer-stage').focus();
+  updateViewerNavigation();
   return PV.gen;
 }
 function viewerResize() {
@@ -3742,17 +3805,24 @@ function viewerResize() {
 }
 function viewerZoom(scale) { PV.fit=false;PV.scale=scale;viewerResize(); }
 function closeViewer() {
+  PV.navRequest++; PV.navBusy=false;
   PV.gen++; $('#photo-viewer').hidden=true; $('#viewer-canvas').replaceChildren();
   if(document.fullscreenElement===$('#photo-viewer')) document.exitFullscreen().catch(()=>{});
   if(PV.focus && PV.focus.isConnected) PV.focus.focus();
 }
-function openMediaViewer(a, fileId) {
+function openMediaViewer(a, fileId, reuseScope = false) {
   const file=(a.files || []).find(f=>f.id===fileId) || (a.files || [])[0];
   if(!file) return toast('没有可预览的文件','err');
-  viewerOpen(file.file_name || '照片预览', a.media_type==='video' ? fileUrl(file.id) : imageUrl(file.id)+'&full=1', a.media_type==='video');
+  if(!reuseScope){PV.kind='media';PV.ids=[a.id];PV.index=0;PV.navRequest++;PV.navBusy=false;}
+  const gen=viewerOpen(file.file_name || '照片预览', a.media_type==='video' ? fileUrl(file.id) : imageUrl(file.id)+'&full=1', a.media_type==='video');
+  if(!reuseScope){
+    const params=filterParams({media_type:a.media_type,sort:S.view==='timeline'?'taken':S.sort,order:S.view==='timeline'?'desc':S.order});
+    apiGet('/api/media/ids',params).then(ids=>{if(gen!==PV.gen || $('#photo-viewer').hidden)return;PV.ids=ids.includes(a.id)?ids:[a.id];PV.index=PV.ids.indexOf(a.id);updateViewerNavigation();}).catch(e=>toast(e.message,'err'));
+  }
 }
-async function openWatermarkViewer(id) {
-  const cfg=JSON.parse(JSON.stringify(wmReadUI()));
+async function openWatermarkViewer(id,reuseScope=false) {
+  if(!reuseScope){PV.kind='watermark';PV.ids=WM.samples.map(s=>s.item.id);if(!PV.ids.includes(id))PV.ids=[id];PV.index=PV.ids.indexOf(id);PV.wmConfig=JSON.parse(JSON.stringify(wmReadUI()));PV.navRequest++;PV.navBusy=false;}
+  const cfg=PV.wmConfig;
   const card=$('[data-wm-full="'+CSS.escape(id)+'"]')?.closest('.wm-card');
   const low=card?.querySelector('img')?.src || '';
   const gen=viewerOpen('水印效果 · 正在加载原尺寸',low);
@@ -3783,6 +3853,8 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();closeViewer();}
   else if(e.key==='+' || e.key==='='){e.preventDefault();viewerZoom(PV.scale*1.25);}
   else if(e.key==='-'){e.preventDefault();viewerZoom(PV.scale/1.25);}
+  else if(e.key==='ArrowLeft'){e.preventDefault();viewerNavigate(-1);}
+  else if(e.key==='ArrowRight'){e.preventDefault();viewerNavigate(1);}
 },true);
 $('#wm-previews').addEventListener('click',e=>{
   const button=e.target.closest('[data-wm-full]');
@@ -3824,3 +3896,137 @@ document.addEventListener('click',e=>{
     if(!menu.contains(e.target) || (e.target.closest('.actions-panel') && e.target.closest('button'))) menu.open=false;
   });
 });
+
+/* ============================ 主题与紧凑照片信息 ============================ */
+let detailClickTimer;
+function queueDetail(id) {clearTimeout(detailClickTimer);detailClickTimer=setTimeout(()=>openDetail(id),280);}
+$('#tl-body').addEventListener('dblclick',e=>{const item=e.target.closest('.tl-item[data-id]');if(item){clearTimeout(detailClickTimer);openDetail(item.dataset.id,true);}});
+let themeSaving=false;
+function applyTheme(theme) {
+  theme=theme==='light'?'light':'dark'; document.documentElement.dataset.theme=theme;
+  try{localStorage.setItem('gx.theme',theme);}catch(e){}
+  $('#theme-toggle').textContent=theme==='light'?'☾ 深色主题':'☀ 浅色主题';
+  $('#theme-toggle').title=theme==='light'?'切换为深色主题':'切换为浅色主题';
+  if($('#set-theme')) $('#set-theme').value=theme;
+}
+async function setTheme(theme) {
+  if(themeSaving)return;
+  const previous=document.documentElement.dataset.theme;themeSaving=true;applyTheme(theme);$('#theme-toggle').disabled=true;
+  try{S.settings=await api('/api/settings',{method:'POST',body:{theme}});}
+  catch(e){applyTheme(previous);toast(e.message,'err');}
+  finally{themeSaving=false;$('#theme-toggle').disabled=false;}
+}
+$('#theme-toggle').onclick=()=>setTheme(document.documentElement.dataset.theme==='light'?'dark':'light');
+const DETAIL_UI={id:null,tab:'overview'};
+function organizeDetail(a) {
+  const meta=$('#d-body .meta'), nodes=Array.from(meta.children);
+  const tabs=document.createElement('div');tabs.className='detail-tabs';tabs.setAttribute('role','tablist');
+  const panels={};
+  for(const [key,label] of [['overview','概览'],['date','日期'],['files','文件与拍摄信息']]) {
+    const button=document.createElement('button');button.className='btn sm';button.dataset.detailTab=key;button.textContent=label;button.setAttribute('role','tab');
+    tabs.appendChild(button);const panel=document.createElement('section');panel.className='detail-tabpanel';panel.dataset.detailPanel=key;panel.setAttribute('role','tabpanel');panels[key]=panel;
+  }
+  let group='overview';
+  for(const node of nodes) {
+    if(node.tagName==='H4') {
+      const label=node.textContent;
+      group=label.startsWith('修改拍摄日期') || label.startsWith('日期候选') ? 'date' : label.startsWith('文件位置') || label.startsWith('实况照片') ? 'files':'overview';
+    }
+    const key=node.querySelector?.('.k')?.textContent;
+    const target=['相机','GPS','SHA-256'].includes(key) || node.classList.contains('row-actions') ? 'files':group;
+    panels[target].appendChild(node);
+  }
+  meta.replaceChildren(tabs,...Object.values(panels));
+  if(DETAIL_UI.id!==a.id){DETAIL_UI.id=a.id;DETAIL_UI.tab='overview';}
+  const select=key=>{DETAIL_UI.tab=key;for(const k of Object.keys(panels))panels[k].hidden=k!==key;tabs.querySelectorAll('button').forEach(b=>{b.classList.toggle('on',b.dataset.detailTab===key);b.setAttribute('aria-selected',String(b.dataset.detailTab===key));});};
+  tabs.onclick=e=>{const b=e.target.closest('[data-detail-tab]');if(b)select(b.dataset.detailTab);};select(DETAIL_UI.tab);
+  const status=document.createElement('div');status.className='watermark-status';
+  status.innerHTML='<span>已有水印检测</span><button class="btn sm" data-detect-watermark="'+esc(a.id)+'">本地检测…</button>';
+  if(a.media_type==='image')panels.overview.appendChild(status);
+}
+
+function updateViewerNavigation() {
+  $('#viewer-position').textContent=PV.ids.length ? (PV.index+1)+' / '+PV.ids.length : '';
+  $('#viewer-prev').disabled=PV.navBusy || PV.index<=0;
+  $('#viewer-next').disabled=PV.navBusy || PV.index>=PV.ids.length-1;
+}
+async function viewerNavigate(delta) {
+  const index=PV.index+delta;if(PV.navBusy || index<0 || index>=PV.ids.length)return;
+  const request=++PV.navRequest,gen=PV.gen;PV.navBusy=true;updateViewerNavigation();
+  try{
+    if(PV.kind==='watermark'){PV.index=index;await openWatermarkViewer(PV.ids[index],true);}
+    else{
+      const a=await apiGet('/api/media/'+PV.ids[index]);
+      if(request!==PV.navRequest || gen!==PV.gen || $('#photo-viewer').hidden)return;
+      PV.index=index;S.detailId=a.id;renderDetail(a);openMediaViewer(a,null,true);
+    }
+  }catch(e){if(request===PV.navRequest)toast(e.message,'err');}
+  finally{if(request===PV.navRequest){PV.navBusy=false;updateViewerNavigation();}}
+}
+$('#viewer-prev').onclick=()=>viewerNavigate(-1);
+$('#viewer-next').onclick=()=>viewerNavigate(1);
+
+/* ============================ 本地已有水印检测 ============================ */
+async function openWatermarkDetection(ids) {
+  ids=Array.from(new Set(ids));if(!ids.length)return toast('请先在媒体库选择照片');
+  modal('<div class="modal-head"><h3>本地已有水印检测</h3></div><div class="modal-body"><p class="tplhint">利用边缘区域、局部对比度和文字行排列进行启发式判断，不联网、不使用 AI。特征分不是概率；招牌、树叶等可能误判，模糊或中央水印也可能漏检。只会在你确认后记录已有水印。</p><p id="detect-progress">正在检测…</p><div id="detect-list"></div></div><div class="modal-foot"><button class="btn" id="detect-close">关闭</button><button class="btn primary" id="detect-confirm">将选中项标记为已有水印</button></div>');
+  const list=$('#detect-list'),progress=$('#detect-progress'),save=$('#detect-confirm');let done=0,suspected=0;save.disabled=true;
+  $('#detect-close').onclick=closeModal;
+  save.onclick=async()=>{
+    const selected=$$('input[data-detect-id]:checked',list).map(e=>e.dataset.detectId);if(!selected.length)return toast('请勾选确认有水印的照片');
+    save.disabled=true;
+    try{await api('/api/watermark/mark',{method:'POST',body:{ids:selected,marked:true}});closeModal();await loadMedia(false);if(S.detailId)openDetail(S.detailId);if(S.view==='watermark')wmSchedulePreview();toast('已记录 '+selected.length+' 张照片的水印状态','ok');}
+    catch(e){toast(e.message,'err');if(save.isConnected)save.disabled=false;}
+  };
+  for(const id of ids){
+    if(!list.isConnected)break;
+    const row=document.createElement('div');row.className='detection-row';row.textContent='正在检测…';list.appendChild(row);
+    try{
+      const r=await api('/api/watermark/detect',{method:'POST',body:{id}});if(!list.isConnected)break;
+      const title=r.known?'已有确认记录':r.suspected?'疑似已有水印':'未检出明显水印';
+      if(r.suspected)suspected++;
+      row.innerHTML='<img loading="lazy" src="'+thumbUrl({id},256)+'" alt=""><div><b>'+esc(r.file_name || id)+'</b><p>'+title+(r.known?'':' · 特征分 '+r.score+'/100')+'</p><small>'+esc(r.reason)+'</small></div><label><input type="checkbox" data-detect-id="'+esc(id)+'" '+(r.suspected?'checked ':'')+(r.known?'disabled ':'')+'> 确认</label>';
+      save.disabled=false;
+    }catch(e){row.textContent=e.message;}
+    done++;progress.textContent='已检测 '+done+' / '+ids.length+' · 疑似 '+suspected+' 张';
+  }
+}
+$('#sel-watermark-detect').onclick=()=>openWatermarkDetection(Array.from(S.sel));
+document.addEventListener('click',async e=>{
+  const detect=e.target.closest('[data-detect-watermark]');if(detect){openWatermarkDetection([detect.dataset.detectWatermark]);return;}
+  const confirm=e.target.closest('[data-confirm-watermark]');if(confirm){
+    confirm.disabled=true;
+    try{await api('/api/watermark/mark',{method:'POST',body:{ids:[confirm.dataset.confirmWatermark],marked:true}});wmSchedulePreview();toast('已确认为已有水印，后续按设置跳过','ok');}
+    catch(err){confirm.disabled=false;toast(err.message,'err');}
+  }
+});
+$('#wm-suspect-skip').onchange=()=>{wmReadUI();wmSchedulePreview();};
+
+function syncReviewSelection(){
+  $$('#review-list input[data-pick]').forEach(input=>{input.checked=S.reviewSel.has(input.dataset.pick);input.closest('.rv-item').classList.toggle('sel',input.checked);});updateReviewBar();
+}
+$('#review-page-all').onclick=()=>{REVIEW.items.forEach(a=>S.reviewSel.add(a.id));syncReviewSelection();};
+$('#review-clear').onclick=()=>{S.reviewSel.clear();syncReviewSelection();};
+$('#review-all').onclick=async()=>{
+  const mode=S.reviewMode;
+  try{const ids=await apiGet('/api/review/ids',{mode});if(mode!==S.reviewMode || S.view!=='review')return;S.reviewSel=new Set(ids);syncReviewSelection();}
+  catch(e){toast(e.message,'err');}
+};
+async function confirmReviewSource(source){
+  if(REVIEW.processing)return;const ids=Array.from(S.reviewSel);if(!ids.length)return toast('请先选择待整理项目');
+  const label=source==='filesystem'?'扫描记录的文件修改时间':'各项目当前显示的日期';
+  confirmDialog('批量确认 '+ids.length+' 项日期',esc('每个项目分别采用'+label+'，不会把所有照片设成同一时间。只修改本地索引，不改照片或 EXIF。确认后这些项目会移出待确认列表。'),async()=>{
+    if(REVIEW.processing)return;REVIEW.processing=true;updateReviewBar();
+    try{
+      const r=await api('/api/media/batch-date-source',{method:'POST',body:{ids,source}});
+      await Promise.all([loadReview(),loadState(),loadFacets()]);if(S.detailId)openDetail(S.detailId);
+      toast('已确认 '+r.updated+' 项'+(r.skipped?'，跳过 '+r.skipped+' 项缺少可用日期的项目':''),'ok');
+    }catch(e){toast(e.message,'err');}
+    finally{REVIEW.processing=false;updateReviewBar();}
+  });
+}
+$('#review-filesystem').onclick=()=>confirmReviewSource('filesystem');
+$('#review-recommended').onclick=()=>confirmReviewSource('recommended');
+$('#similar-list').addEventListener('dblclick',e=>{if(e.target.closest('button,input,.sim-card-actions'))return;const item=e.target.closest('[data-open]');if(item){clearTimeout(detailClickTimer);openDetail(item.dataset.open,true);}});
+
+$('#wm-video').addEventListener('change',async()=>{wmReadUI();await wmUpdateScope();await wmPickSamples();wmSchedulePreview();});
