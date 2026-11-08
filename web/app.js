@@ -601,6 +601,7 @@ function renderDetail(a) {
   const files = a.files || [];
   const primary = files[0] || {};
   const isVideo = a.media_type === 'video';
+  $('#d-delete').hidden = isVideo;
   const ext = (primary.ext || '').toLowerCase();
   const decodable = canPreviewImage(ext);
   const heifPreview = HEIF_EXT.test(ext) && heifReady();
@@ -1065,7 +1066,7 @@ simRange.addEventListener('change', () => {
 });
 
 /* ============================ 任务中心 ============================ */
-const JOB_LABEL = { scan: '扫描索引', hash: '计算哈希', archive: '复制/移动归档', undo: '撤销批次', phash: '相似指纹', watermark: '时间水印', edit: '图像编辑', album: '网页相册', slideshow: '幻灯片' };
+const JOB_LABEL = { scan: '扫描索引', hash: '计算哈希', archive: '复制/移动归档', undo: '撤销批次', phash: '相似指纹', watermark: '时间水印', edit: '图像编辑', album: '网页相册', slideshow: '幻灯片', trash: '移到回收站' };
 const JOB_STATUS = {
   running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消',
   cancelling: '正在取消', interrupted: '已中断', partial: '部分完成', queued: '排队中',
@@ -3125,7 +3126,7 @@ async function editRefreshPreview() {
   if (EDIT.tab === 'rotate') {
     const sample = await editPickSample();
     if (sample) {
-      area.innerHTML = `<div class="wm-card"><div class="ph"><img src="${thumbUrl(sample,640)}" alt="当前照片"></div><div class="meta">当前照片。点击旋转或翻转即执行；默认生成副本，输出位置见设置。</div></div>`;
+      area.innerHTML = `<div class="wm-card"><div class="ph"><img src="${thumbUrl(sample,640)}" alt="当前照片"></div><div class="meta">当前照片。点击旋转或翻转即执行；默认修改当前照片并备份，可在覆盖记录中还原。</div></div>`;
       return;
     }
     area.innerHTML = `<div class="wm-empty">
@@ -3310,7 +3311,7 @@ async function openEditBackupList() {
   const paint = list => {
     if (!list.length) {
       body.innerHTML = `<div class="bk-empty">还没有用「覆盖原图」做过编辑。<br>
-        覆盖前备份的原件会放在数据目录的 <code>backups\\edit-&lt;任务ID&gt;\\</code> 下，
+        修改前的原件会备份到统一输出位置的 <code>backups\\edit-&lt;任务ID&gt;\\</code> 下，
         随时可以在这里一键还原。</div>`;
       return;
     }
@@ -3404,16 +3405,17 @@ async function runEdit(op) {
   const doRun = async () => {
     EDIT.busy = true;
     try {
+      const fileIds = await editFileIds(s.ids);
       const r = await api('/api/edit/run', { method: 'POST', body });
       toast(`已开始${label} ${r.count} 项`, 'ok');
-      await followLibraryEdit(r.job_id);
+      await followLibraryEdit(r.job_id, overwrite ? fileIds : []);
     } catch (e) { EDIT.busy = false; toast(e.message, 'err'); }
   };
-  if (overwrite) {
+  if (overwrite && (s.count > 1 || !body.backup)) {
     confirmDialog('覆盖原图？',
       `将对 ${s.count} 项执行「${label}」，直接改写原文件。\n\n` +
       ($('#edit-backup').checked
-        ? '覆盖前会先把原件备份到数据目录的 backups\\ 下，可在「覆盖记录」里一键还原。'
+        ? '修改前自动备份到统一输出位置的 backups 下，可在「覆盖记录」里还原。'
         : '注意：你没有勾选备份，原图将无法恢复！'),
       doRun);
     return;
@@ -3445,16 +3447,17 @@ async function runEditAction() {
   const doRun = async () => {
     EDIT.busy = true;
     try {
+      const fileIds = await editFileIds(s.ids);
       const r = await api('/api/edit/run', { method: 'POST', body });
       toast(`已开始${label} ${r.count} 项`, 'ok');
-      await followLibraryEdit(r.job_id);
+      await followLibraryEdit(r.job_id, overwrite ? fileIds : []);
     } catch (e) { EDIT.busy = false; toast(e.message, 'err'); }
   };
   if (overwrite) {
     confirmDialog('覆盖原图？',
       `将对 ${s.count} 项执行「${label}」，直接改写原文件。\n\n` +
       ($('#edit-backup').checked
-        ? '覆盖前会先把原件备份到数据目录的 backups\\ 下，可在「覆盖记录」里一键还原。'
+        ? '修改前自动备份到统一输出位置的 backups 下，可在「覆盖记录」里还原。'
         : '注意：你没有勾选备份，原图将无法恢复！'),
       doRun);
     return;
@@ -3555,9 +3558,6 @@ $('#edit-run').addEventListener('click', runEditAction);
 
 $('#edit-mode').addEventListener('change', () => {
   editSyncMode();
-  if ($('#edit-mode').value === 'overwrite') {
-    toast('覆盖模式会直接改写原文件，建议先选 1 张试一张', 'err');
-  }
 });
 $('#edit-pick').addEventListener('click', async () => {
   await pickInto('#edit-out');
@@ -3598,13 +3598,24 @@ function closeLibraryEditor() {
   $('#view-library').classList.remove('editing'); layout();
 }
 document.addEventListener('keydown', e => { if(e.key==='Escape' && EDIT.open && $('#modal-root').hidden) closeLibraryEditor(); });
-async function followLibraryEdit(jobId) {
+async function editFileIds(ids) {
+  return Promise.all(ids.map(async id => {
+    const a = await apiGet('/api/media/' + id);
+    if (!a.files || !a.files.length) throw new Error('照片文件不可用，请重新选择');
+    return a.files[0].id;
+  }));
+}
+async function followLibraryEdit(jobId, fileIds = []) {
   EDIT.busy = true; $('#edit-context').textContent = '正在编辑…';
   try {
     for (let i = 0; i < 600; i++) {
       const job = await apiGet('/api/jobs/' + jobId);
       if (!['running','queued','cancelling'].includes(job.status)) {
         toast(job.message || '编辑完成', job.failed ? 'err' : 'ok');
+        if (fileIds.length) {
+          const current = await Promise.all(fileIds.map(id=>apiGet('/api/media/by-file/'+id)));
+          EDIT.ids = Array.from(new Set(current.map(a=>a.id))); S.sel = new Set(EDIT.ids);
+        }
         await loadState(); await loadMedia(false);
         if (EDIT.open) loadEditView(); return;
       }
@@ -3617,6 +3628,66 @@ $('#view-library').appendChild($('#library-editor'));
 $('#sel-edit').onclick = () => openLibraryEditor().catch(e=>toast(e.message,'err'));
 $('#d-edit').onclick = () => openLibraryEditor(S.detailId ? [S.detailId] : []).catch(e=>toast(e.message,'err'));
 $('#edit-close').onclick = closeLibraryEditor;
+
+let deletingPhotos = false;
+async function openDeletePhotos(ids) {
+  if (deletingPhotos || EDIT.busy) return toast('请等待当前照片操作完成');
+  ids = Array.from(new Set(ids));
+  if (!ids.length) return toast('请先选择要删除的照片');
+  // 删除范围是打开确认框时的选择快照；不允许退回到整个筛选结果。
+  const plan = await api('/api/media/trash/plan', {method:'POST', body:{ids}});
+  modal(`<div class="modal-head"><h3>删除照片</h3></div>
+    <div class="modal-body">
+      <p>将以下 <b id="delete-count">${plan.count}</b> 个文件移到 Windows 回收站，并更新媒体库。</p>
+      <p class="tplhint">默认只处理每张照片当前显示的文件。相同照片的其他副本、实况视频及编辑备份会保留。</p>
+      <label><input type="checkbox" id="delete-copies"> 同时删除所选照片的全部重复副本</label>
+      <div id="delete-paths" style="max-height:240px;overflow:auto;overflow-wrap:anywhere;margin-top:14px"></div>
+      <p id="delete-error" role="alert"></p>
+      <p class="tplhint">误删后可在 Windows 回收站还原，再扫描原媒体源。</p>
+    </div>
+    <div class="modal-foot"><button class="btn" id="delete-cancel">取消</button>
+      <button class="btn danger" id="delete-confirm">移到回收站</button></div>`, {narrow:true});
+  const paths = $('#delete-paths'), count = $('#delete-count'), error = $('#delete-error');
+  const confirm = $('#delete-confirm'), copies = $('#delete-copies');
+  let current = plan;
+  const render = p => { count.textContent = p.count; paths.innerHTML = p.files.map(f=>`<div class="file">${esc(f.path)}</div>`).join(''); };
+  render(plan);
+  $('#delete-cancel').onclick = closeModal;
+  copies.onchange = async () => {
+    confirm.disabled = true; copies.disabled = true; current = null; error.textContent = '';
+    try {
+      const p = await api('/api/media/trash/plan', {method:'POST',body:{ids,all_copies:copies.checked}});
+      if (!confirm.isConnected) return;
+      current = p; render(p); confirm.disabled = false;
+    } catch(e) { error.textContent = e.message; }
+    finally { copies.disabled = false; }
+  };
+  confirm.onclick = async () => {
+    if (deletingPhotos || !current || confirm.disabled) return;
+    deletingPhotos = true; confirm.disabled = true;
+    try {
+      const r = await api('/api/media/trash/run', {method:'POST',body:{plan_id:current.plan_id}});
+      closeModal();
+      if (ids.includes(S.detailId)) { closeDetail(); $('#d-body').innerHTML = ''; }
+      if (EDIT.open && EDIT.ids.some(id=>ids.includes(id))) closeLibraryEditor();
+      toast('正在移到回收站，进度可在任务中心查看'); loadJobs();
+      for (let i=0; i<1800; i++) {
+        const job = await apiGet('/api/jobs/'+r.job_id);
+        if (!['running','queued','cancelling'].includes(job.status)) {
+          ids.forEach(id=>S.sel.delete(id));
+          toast(job.message || '删除完成', job.failed ? 'err' : 'ok');
+          await loadState(); await loadFacets(); await loadMedia(false); loadJobs();
+          return;
+        }
+        await new Promise(resolve=>setTimeout(resolve,500));
+      }
+      toast('任务仍在后台运行，请在任务中心查看结果');
+    } catch(e) { toast(e.message,'err'); if (confirm.isConnected) confirm.disabled = false; }
+    finally { deletingPhotos = false; }
+  };
+}
+$('#sel-delete').onclick = () => openDeletePhotos(Array.from(S.sel)).catch(e=>toast(e.message,'err'));
+$('#d-delete').onclick = () => openDeletePhotos(S.detailId ? [S.detailId] : []).catch(e=>toast(e.message,'err'));
 $('#wm-font-browse').onclick = async () => {
   const input = $('#wm-font-path');
   const path = await pickFolder(input.value,'font');

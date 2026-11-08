@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>照片与视频管理器</title>
-<link rel="icon" href="/favicon.ico">
+<title>光匣 · 本地影像管家</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico?v=1.8.1">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,8 +12,8 @@
   <!-- 左侧导航 -->
   <aside class="rail">
     <div class="brand">
-      <div class="logo">◧</div>
-      <div class="brand-text"><b>照片管理</b><small>本地 · 离线 · 非破坏</small></div>
+      <div class="logo"><img src="/favicon.ico?v=1.8.1" alt="光匣图标"></div>
+      <div class="brand-text"><b>光匣</b><small>本地影像管家</small></div>
     </div>
     <nav class="nav" id="nav">
       <button data-view="library" class="on"><i>▤</i><span>媒体库</span></button>
@@ -96,6 +96,7 @@
       <button class="btn sm" id="sel-mark">标记 / 取消标记</button>
       <button class="btn sm primary" id="sel-archive">加入归档任务</button>
 <button class="btn sm primary" id="sel-edit">编辑所选照片</button>
+        <button class="btn sm danger" id="sel-delete">删除所选照片…</button>
       <button class="btn sm primary" id="sel-watermark">给所选照片加水印</button><button class="btn sm" id="sel-watermark-mark">已有水印标记…</button>
     </div>
 
@@ -478,10 +479,7 @@
               <div class="wm-title">输出方式</div>
               <div class="wm-runline">
                 <label class="wmlabel sm" style="max-width:230px">方式
-                  <select id="edit-mode">
-                    <option value="copy">新建副本（原图不动）</option>
-                    <option value="overwrite">覆盖原图（会改写原文件）</option>
-                  </select>
+                  <select id="edit-mode"><option value="overwrite" selected>修改当前照片（推荐）</option><option value="copy">另存为新副本</option></select>
                 </label>
                 <label class="wm-check" id="edit-backup-row" hidden><input type="checkbox" id="edit-backup" checked> 覆盖前先备份原件</label>
                 <button class="btn sm" id="edit-backups" title="查看并还原覆盖前的原件备份">覆盖记录</button>
@@ -499,7 +497,7 @@
                 <label class="wm-check" title="取消勾选会移除 EXIF/GPS"><input type="checkbox" id="edit-exif" checked> 保留 EXIF</label>
               </div>
               <div class="wm-runline">
-                <span class="wm-warn" id="edit-warn" hidden>注意：覆盖模式会直接改写原文件，建议先用 1 张试手。</span>
+                <span class="wm-hint" id="edit-warn" hidden>修改当前文件，不新增照片；备份可在「覆盖记录」中还原。</span>
                 <span class="wm-scope" id="edit-scope"></span>
               </div>
               <button class="btn primary" id="edit-run" style="width:100%;margin-top:10px">应用到所选照片</button>
@@ -580,7 +578,8 @@
       <div class="detail-tools">
         <button class="icon-btn" id="d-rotate" title="旋转预览（不修改原图）">↻</button>
         <button class="btn sm" id="d-edit">编辑此照片</button>
-<button class="icon-btn" id="d-close" title="关闭">×</button>
+        <button class="btn sm danger" id="d-delete">删除照片…</button>
+        <button class="icon-btn" id="d-close" title="关闭">×</button>
       </div>
     </div>
     <div class="detail-body" id="d-body"></div>

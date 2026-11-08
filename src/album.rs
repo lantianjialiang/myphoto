@@ -251,7 +251,7 @@ const TEMPLATE: &str = r#"<!doctype html>
 </header>
 __NOTE__
 <main class="grid" id="grid"></main>
-<footer>由「照片与视频管理器」导出。此页面不联网，图片与页面在同一文件夹内。</footer>
+<footer>由「光匣 · 本地影像管家」导出。此页面不联网，图片与页面在同一文件夹内。</footer>
 <div class="lb" id="lb">
   <button class="close" data-act="close" title="关闭（Esc）">×</button>
   <button class="prev" data-act="prev" title="上一张（←）">‹</button>

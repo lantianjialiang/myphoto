@@ -269,7 +269,7 @@ fn route_all(app: &Shared, req: &mut Request) -> Response<Body> {
             )
         }
         "/favicon.ico" => {
-            return respond_bytes(200, crate::web::FAVICON.to_vec(), "image/png", vec![])
+            return respond_bytes(200, crate::web::FAVICON.to_vec(), "image/x-icon", vec![("Cache-Control".into(),"no-cache".into())])
         }
         _ => {}
     }
@@ -313,6 +313,16 @@ fn route(
         ["api", "sources", id, "reveal"] if m == "POST" => Some(api_source_reveal(app, id)),
         ["api", "media"] => Some(api_media_list(app, params)),
         ["api", "media", "batch-date"] if m == "POST" => Some(api_batch_date(app, req)),
+        ["api", "media", "trash", "plan"] if m == "POST" => Some(api_trash(app, req, false)),
+        ["api", "media", "trash", "run"] if m == "POST" => Some(api_trash(app, req, true)),
+        ["api", "media", "by-file", id] if m == "GET" => {
+            let Ok(conn) = open_db(app) else { return Some(json_err(500, "数据库不可用")) };
+            Some(match conn.query_row("SELECT asset_id FROM media_files WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+                Ok(Some(id)) => ok(json!({ "id": id })),
+                Ok(None) => json_err(404, "文件不存在"),
+                Err(e) => json_err(500, &e.to_string()),
+            })
+        },
         ["api", "media", "batch-tags"] if m == "POST" => Some(api_batch_tags(app, req)),
         ["api", "media", "batch-flags"] if m == "POST" => Some(api_batch_flags(app, req)),
         ["api", "media", "shift"] if m == "POST" => Some(api_shift(app, req)),
@@ -1913,6 +1923,40 @@ fn api_wm_drop_backup(app: &Shared, req: &mut Request) -> Response<Body> {
 
 // ---------------- 批量旋转 / 翻转 ----------------
 
+fn api_trash(app: &Shared, req: &mut Request, execute: bool) -> Response<Body> {
+    let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
+    if !app.jobs.running().is_empty() {
+        return json_err(409, "请先等待当前任务完成，再删除照片");
+    }
+    let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
+    if !execute {
+        let ids: Vec<String> = body.get("ids").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return json_err(400, "请明确选择要删除的照片");
+        }
+        let all_copies = body.get("all_copies").and_then(Value::as_bool).unwrap_or(false);
+        return match crate::trash::plan(&conn, &ids, all_copies) {
+            Ok(v) => ok(v),
+            Err(e) => json_err(400, &e),
+        };
+    }
+    let id = body.get("plan_id").and_then(Value::as_str).unwrap_or("");
+    let payload = match crate::trash::take_plan(&conn, id) {
+        Ok(v) => v,
+        Err(e) => return json_err(409, &e),
+    };
+    let db = app.paths.db_path.clone();
+    drop(conn);
+    let job = app.jobs.start("trash", "删除照片（移到回收站）", 0, move |ctl| {
+        if let Err(e) = crate::trash::run(&db, &ctl, &payload) {
+            ctl.finish(Some(e));
+        }
+    });
+    ok(json!({ "job_id": job }))
+}
+
 fn api_edit_run(app: &Shared, req: &mut Request) -> Response<Body> {
     let Some(body) = read_body(req) else { return json_err(400, "请求格式错误") };
     let op_s = body.get("op").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
@@ -1922,7 +1966,7 @@ fn api_edit_run(app: &Shared, req: &mut Request) -> Response<Body> {
         Ok(a) => a,
         Err(e) => return json_err(400, &e),
     };
-    let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("copy").to_string();
+    let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("overwrite").to_string();
     let overwrite = mode.eq_ignore_ascii_case("overwrite");
     let out_dir = output_dir(app, &body, "edited");
     if out_dir.is_empty() && !overwrite {

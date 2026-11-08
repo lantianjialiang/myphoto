@@ -1,13 +1,13 @@
-﻿# 照片与视频管理器 —— 交付打包
+﻿# 光匣 · 本地影像管家 —— 交付打包
 #
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -SkipBuild     # 复用已有 exe
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Msix         # 额外尝试出 MSIX
 #
 # 产物：
-#   dist\PhotoVideoManager-<版本>-win-x64\        便携目录（双击 启动.cmd 即用）
-#   dist\PhotoVideoManager-<版本>-win-x64.zip     压缩包，可直接拷走
-#   dist\PhotoVideoManager-<版本>-win-x64.msix    仅在 -Msix 且签名可用时生成
+#   dist\Guangxia-<版本>-win-x64\        便携目录（双击 启动.cmd 即用）
+#   dist\Guangxia-<版本>-win-x64.zip     压缩包，可直接拷走
+#   dist\Guangxia-<版本>-win-x64.msix    仅在 -Msix 且签名可用时生成
 
 param(
     [string]$Version = '',
@@ -27,7 +27,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw '版本号格式不正确' }
 $release = Join-Path $root 'target\release'
 $exeSrc = Join-Path $release 'photo-video-manager.exe'
 $distRoot = Join-Path $root 'dist'
-$name = "PhotoVideoManager-$Version-win-x64"
+$name = "Guangxia-$Version-win-x64"
 $out = Join-Path $distRoot $name
 
 if (-not $SkipBuild) {
@@ -48,8 +48,9 @@ if (Test-Path -LiteralPath $out) {
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $out 'lib') | Out-Null
 
-Copy-Item -LiteralPath $exeSrc -Destination (Join-Path $out 'PhotoVideoManager.exe')
+Copy-Item -LiteralPath $exeSrc -Destination (Join-Path $out 'Guangxia.exe')
 $sizeExe = (Get-Item -LiteralPath $exeSrc).Length
+Copy-Item -LiteralPath (Join-Path $root 'assets/guangxia.ico') -Destination (Join-Path $out 'Guangxia.ico') -Force
 
 # HEIC 解码器（可选组件）：找不到 lib\ 时程序照常启动，只是 HEIC 无缩略图
 $libSrc = Join-Path $root 'lib'
@@ -69,13 +70,13 @@ if (Test-Path -LiteralPath (Join-Path $root 'TODO.md')) {
 $launcher = @'
 @echo off
 chcp 65001 >nul
-start "" "%~dp0PhotoVideoManager.exe" %*
+start "" "%~dp0Guangxia.exe" %*
 '@
 Set-Content -LiteralPath (Join-Path $out '启动.cmd') -Value $launcher -Encoding ASCII
 
 # 第三方组件说明（LGPL 要求可替换的动态库）
 $notices = @"
-照片与视频管理器 $Version
+光匣 · 本地影像管家 $Version
 
 本目录包含以下第三方组件（动态链接，可自行替换同名 DLL）：
   lib\heif.dll      libheif 1.23.7   LGPL-3.0   详见 lib\LICENSE-libheif.txt
@@ -118,7 +119,7 @@ if ($Msix) {
          IgnorableNamespaces="uap rescap">
   <Identity Name="Huatek.PhotoVideoManager" Publisher="CN=PhotoVideoManager" Version="$Version.0" ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>照片与视频管理器</DisplayName>
+    <DisplayName>光匣 · 本地影像管家</DisplayName>
     <PublisherDisplayName>Huatek</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -127,8 +128,8 @@ if ($Msix) {
   </Dependencies>
   <Resources><Resource Language="zh-cn" /></Resources>
   <Applications>
-    <Application Id="App" Executable="PhotoVideoManager.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="照片与视频管理器" Description="离线、非破坏性的本地照片与视频整理工具"
+    <Application Id="App" Executable="Guangxia.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="光匣 · 本地影像管家" Description="离线、非破坏性的本地照片与视频整理工具"
         BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
     </Application>
   </Applications>
@@ -146,7 +147,8 @@ if ($Msix) {
         foreach ($pair in @(@('StoreLogo.png', 50), @('Square150x150Logo.png', 150), @('Square44x44Logo.png', 44))) {
             $bmp = New-Object System.Drawing.Bitmap $pair[1], $pair[1]
             $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.Clear([System.Drawing.Color]::FromArgb(255, 74, 108, 247))
+            $brandIcon = [System.Drawing.Image]::FromFile((Join-Path $root 'assets/guangxia.png'))
+            try { $g.InterpolationMode = 'HighQualityBicubic'; $g.DrawImage($brandIcon, 0, 0, [int]$pair[1], [int]$pair[1]) } finally { $brandIcon.Dispose() }
             $g.Dispose()
             $bmp.Save((Join-Path $assets $pair[0]), [System.Drawing.Imaging.ImageFormat]::Png)
             $bmp.Dispose()

@@ -1,9 +1,9 @@
 [package]
 name = "photo-video-manager"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 rust-version = "1.88"
-description = "本地照片与视频整理工具（离线、非破坏性）"
+description = "光匣 · 本地影像管家（离线、非破坏性）"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -28,7 +28,7 @@ try {
     }
     # A shown, invisible owner keeps the native dialog above the application.
     # TopMost is scoped to this short-lived owner; it is disposed on every exit.
-    $owner.Text = '照片管理器 - 选择文件夹'
+    $owner.Text = '光匣 - 选择文件夹'
     $owner.ShowInTaskbar = $false
     $owner.StartPosition = 'CenterScreen'
     $owner.Size = New-Object System.Drawing.Size(1, 1)

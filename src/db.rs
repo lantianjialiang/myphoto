@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 pub type R<T> = Result<T, String>;
 
@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS watermark_marks (
 );
 CREATE INDEX IF NOT EXISTS idx_watermark_hash ON watermark_marks(content_hash);
 CREATE TABLE IF NOT EXISTS watermark_hashes (content_hash TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS delete_plans (id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending');
 CREATE TABLE IF NOT EXISTS watermark_rotation (
  asset_id TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
  degrees INTEGER NOT NULL DEFAULT 0

@@ -28,6 +28,7 @@ mod server;
 mod similar;
 mod slideshow;
 mod tags;
+mod trash;
 mod util;
 mod watch;
 mod window_lifetime;
@@ -71,7 +72,7 @@ fn fatal(headline: &str) -> ! {
             std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
         };
         let text = to_wide(headline);
-        let cap = to_wide("照片与视频管理器");
+        let cap = to_wide("光匣 · 本地影像管家");
         unsafe {
             MessageBoxW(std::ptr::null_mut(), text.as_ptr(), cap.as_ptr(), 0x10);
         }
@@ -182,7 +183,7 @@ fn main() {
         Err(e) => fatal(&format!("无法启动本地服务：{e}")),
     };
     let url = format!("http://127.0.0.1:{}/?token={}", handle.port, app.token);
-    say(&format!("照片与视频管理器 v{VERSION}"));
+    say(&format!("光匣 · 本地影像管家 v{VERSION}"));
     say(&format!("数据目录：{}", paths.data_dir.display()));
     say(&format!("本地地址：{url}"));
 

@@ -76,7 +76,34 @@ pub fn run(db_path: &Path, job: &JobCtl, source_id: &str, data_dir: &Path) -> Re
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "媒体源不存在".to_string())?;
     let (root, options_json) = row;
-    let opts: SourceOptions = serde_json::from_str(&options_json).unwrap_or_default();
+    let mut opts: SourceOptions = serde_json::from_str(&options_json).unwrap_or_default();
+    // 自动备份不是媒体输出。统一输出位置可能位于媒体源内，不能把每次编辑的原件备份再次入库。
+    if let Some(out) = db::get_setting(&conn, "output_root") {
+        if !out.trim().is_empty() {
+            opts.excludes.push(Path::new(&out).join("backups").to_string_lossy().into_owned());
+        }
+    }
+    // 输出位置更改后，旧备份仍须排除；记录的路径也供还原功能继续使用。
+    {
+        let mut st = conn.prepare("SELECT backup_path FROM edit_backups UNION SELECT backup_path FROM watermark_backups").map_err(|e|e.to_string())?;
+        let rows = st.query_map([], |r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
+        for p in rows {
+            let p = p.map_err(|e|e.to_string())?;
+            if let Some(parent) = Path::new(&p).parent() {
+                opts.excludes.push(parent.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // 浏览器/系统选择器可能返回同一目录的短文件名或扩展路径，比较前与媒体源统一。
+    for ex in &mut opts.excludes {
+        if Path::new(ex).is_absolute() {
+            if let Ok(p) = std::fs::canonicalize(&*ex) {
+                *ex = util::clean_path(&p).to_string_lossy().into_owned();
+            }
+        }
+    }
+    opts.excludes.sort();
+    opts.excludes.dedup();
     let root_path = PathBuf::from(&root);
 
     if !root_path.is_dir() {
