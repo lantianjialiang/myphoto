@@ -1,4 +1,4 @@
-﻿光匣 · 本地影像管家 1.11.0
+﻿光匣 · 本地影像管家 1.11.2
 
 本目录包含以下第三方组件（动态链接，可自行替换同名 DLL）：
   lib\heif.dll      libheif 1.23.7   LGPL-3.0   详见 lib\LICENSE-libheif.txt

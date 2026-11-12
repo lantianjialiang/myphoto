@@ -74,6 +74,7 @@ if (Test-Path -LiteralPath $libSrc) {
 }
 
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $out -Force
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $out -Force
 if (Test-Path -LiteralPath (Join-Path $root 'TODO.md')) {
     Copy-Item -LiteralPath (Join-Path $root 'TODO.md') -Destination $out -Force
 }
@@ -110,7 +111,7 @@ Set-Content -LiteralPath (Join-Path $out 'THIRD-PARTY-NOTICES.txt') -Value $noti
 $zip = "$out.zip"
 $zipStage = Join-Path $root ('.cache\package\' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $zipStage 'lib') | Out-Null
-foreach ($file in @('Guangxia.exe','Guangxia.ico','启动.cmd','README.md','TODO.md','THIRD-PARTY-NOTICES.txt')) {
+foreach ($file in @('Guangxia.exe','Guangxia.ico','启动.cmd','README.md','LICENSE','TODO.md','THIRD-PARTY-NOTICES.txt')) {
     $source = Join-Path $out $file
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $zipStage }
 }

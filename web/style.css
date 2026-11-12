@@ -252,6 +252,11 @@ select:hover { border-color: #3a4252; }
   border-radius: 6px; font-size: 12px;
 }
 .seg button.on { background: var(--panel-3); color: var(--text); }
+#view-timeline .vhead { flex-wrap: wrap; }
+#view-timeline .vhead > :first-child { flex: 1 1 240px; min-width: 0; }
+#view-timeline .vhead-actions { flex: 0 0 auto; flex-wrap: wrap; max-width: 100%; }
+#view-timeline .vhead-actions button { white-space: nowrap; }
+#tl-density { flex-shrink: 0; }
 
 .vbody { flex: 1 1 auto; overflow: auto; padding: 14px 20px 24px; min-height: 0; }
 .empty {
@@ -309,7 +314,7 @@ select:hover { border-color: #3a4252; }
   border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
   background: var(--panel);
 }
-.job-head { display: flex; align-items: center; gap: 10px; }
+.job-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .job-head .k { font-size: 12.5px; font-weight: 600; }
 .job-head .t { color: var(--dim-2); font-size: 11.5px; }
 .job-head .sp { flex: 1; }
@@ -572,18 +577,22 @@ select:hover { border-color: #3a4252; }
 .wm-posgrid button[data-pos="free"] { grid-column: 1 / -1; height: 28px; font-size: 12px; }
 .wm-posgrid button[data-pos="free"].on { background: rgba(255,138,30,.16); border-color: rgba(255,138,30,.55); color: #ffcda3; }
 /* 自由定位模式下，预览图可拖拽 */
-.wm-previews.free .wm-card .ph { cursor: crosshair; }
-.wm-previews.free .wm-card .ph img { pointer-events: none; }
 .wm-free-box {
   position: absolute; border: 1px dashed rgba(255,138,30,.9);
-  background: rgba(255,138,30,.10); pointer-events: none; border-radius: 3px;
+  background: rgba(255,138,30,.10); border-radius: 3px;
+  cursor: grab; touch-action: none; user-select: none;
   box-shadow: 0 0 0 1px rgba(0,0,0,.35);
 }
-.wm-free-box::after {
-  content: '拖动我'; position: absolute; left: 0; top: -17px;
+.wm-free-box[hidden] { display: none; }
+.wm-free-box:active { cursor: grabbing; }
+.wm-free-box::before { content: ''; position: absolute; inset: -8px; }
+.wm-drag-handle {
+  position: absolute; left: 0; bottom: calc(100% + 2px);
   font-size: 10px; color: #ffb877; white-space: nowrap;
   background: rgba(0,0,0,.55); padding: 1px 4px; border-radius: 3px;
 }
+.wm-free-box.handle-below .wm-drag-handle { top: calc(100% + 2px); bottom: auto; }
+.wm-free-box.handle-right .wm-drag-handle { left: auto; right: 0; }
 .wm-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .wm-stage-head {
   display: flex; align-items: center; gap: 10px; padding: 12px 18px 6px;
@@ -679,8 +688,14 @@ select:hover { border-color: #3a4252; }
 .detail-head {padding:10px;gap:7px;}
 .detail-title {flex-basis:100%;font-weight:600;}
 .detail-body {display:flex;flex-direction:column;min-height:0;overflow:hidden;}
-.detail-body .preview {flex:0 0 auto;height:clamp(140px,26vh,270px);min-height:0;padding:8px;}
-.detail-body .preview img,.detail-body .preview video {max-height:100%;max-width:100%;object-fit:contain;}
+.detail-body .preview {
+  flex: 0 0 auto; height: clamp(140px,26vh,270px); min-height: 0;
+  grid-template: minmax(0,1fr) / minmax(0,1fr); overflow: hidden;
+}
+.detail-body .preview > * { grid-area: 1 / 1; }
+.detail-body .preview img,.detail-body .preview video {
+  min-height: 0; min-width: 0; max-height: 100%; max-width: 100%; object-fit: contain;
+}
 .detail-body .meta {display:flex;flex:1;flex-direction:column;min-height:0;padding:0 12px 10px;overflow:hidden;}
 .detail-tabs {display:flex;gap:5px;padding:10px 0;border-bottom:1px solid var(--line);flex-shrink:0;}
 .detail-tabs .btn {flex:1;padding:0 6px;}

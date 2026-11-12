@@ -1135,7 +1135,8 @@ function renderJobs() {
   box.innerHTML = S.jobs.map(j => {
     const pct = j.total > 0 ? Math.min(100, Math.round(j.done / j.total * 100)) : (j.status === 'running' ? 8 : 100);
     const cls = j.status === 'completed' ? 'done' : (j.status === 'failed' ? 'fail' : '');
-    const running = ['running', 'cancelling'].includes(j.status);
+    const running = ['running', 'cancelling', 'queued'].includes(j.status);
+    const canDelete = j.persisted && ['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(j.status);
     return `<div class="job">
       <div class="job-head">
         <span class="pill ${running || j.status === 'partial' ? 'warn' : j.status === 'failed' ? 'bad' : 'ok'}">${esc(JOB_STATUS[j.status] || j.status)}</span>
@@ -1144,6 +1145,7 @@ function renderJobs() {
         <span class="sp"></span>
         ${running ? `<button class="btn sm danger" data-cancel="${esc(j.id)}">取消</button>` : ''}
         ${!running && j.has_outputs ? `<button class="btn sm" data-results="${esc(j.id)}">查看生成副本</button>` : ''}
+        ${canDelete ? `<button class="btn sm danger" data-delete-job="${esc(j.id)}">删除记录…</button>` : ''}
       </div>
       <div class="bar ${cls}"><i style="width:${pct}%"></i></div>
       <div class="job-meta">
@@ -1207,6 +1209,19 @@ async function renderUndo() {
 
 $('#jobs-list').addEventListener('click', async ev => {
   const t = ev.target;
+  if (t.dataset.deleteJob) {
+    const id = t.dataset.deleteJob;
+    confirmDialog('删除任务记录？', '删除任务中心的这条记录。照片、生成文件、原图备份和归档撤销记录会保留。', async () => {
+      try {
+        await api('/api/jobs/' + encodeURIComponent(id), { method: 'DELETE' });
+        await loadJobs();
+        toast('已删除任务记录', 'ok');
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    });
+    return;
+  }
   if (t.dataset.results) {
     try {
       const ids = await apiGet('/api/media/ids', { job_id: t.dataset.results });
@@ -2227,6 +2242,8 @@ const WM = {
   gen: 0,
   timer: null,
   loading: false,
+  dragging: null,
+  resizeObserver: null,
   ffChecked: false,
 };
 
@@ -2354,6 +2371,8 @@ async function wmUpdateScope() {
   const mode=$('#wm-scope-mode').value,selected=Array.from(S.sel),video=wmCfg().video!==false;
   WM.scope={ids:[],count:0,label:'正在读取范围…'};$('#wm-scope').textContent=WM.scope.label;$('#wm-run').disabled=true;
   WM.gen++;WM.samples=[];wmRenderSampleChips();$('#wm-previews').innerHTML='<div class="wm-empty">正在读取当前范围…</div>';
+  WM.dragging = null;
+  WM.resizeObserver?.disconnect();
   try{
     let ids;
     if(mode==='selected'){
@@ -2492,13 +2511,6 @@ async function wmPickSamples() {
   } catch (e) { if (request === WM.scopeGeneration) toast(e.message, 'err'); }
 }
 
-/** 自由定位：按预览图的实际显示尺寸算出水印框的屏幕位置 */
-function wmFreeBox(r) {
-  const b = r.block;
-  if (!b) return '';
-  return `<div class="wm-free-box" data-bw="${b.w}" data-bh="${b.h}"></div>`;
-}
-
 /**
  * 把水印框摆到正确的位置。
  * 预览图是 max-width/max-height 缩放后居中的，容器里可能有留白，
@@ -2510,7 +2522,7 @@ function wmPlaceBox(box, img, ph, r, px, py) {
   if (!ir.width || !ir.height) return;
   // 每个图像像素对应多少屏幕像素（预览图是被缩放显示的）
   const scale = ir.width / r.width;
-  const bw = Number(box.dataset.bw), bh = Number(box.dataset.bh);
+  const { w: bw, h: bh } = r.block;
   const maxX = Math.max(0, r.width - bw);
   const maxY = Math.max(0, r.height - bh);
   const cx = Math.min(Math.max(0, px), maxX);
@@ -2522,30 +2534,26 @@ function wmPlaceBox(box, img, ph, r, px, py) {
   box.style.top = top + 'px';
   box.style.width = (bw * scale) + 'px';
   box.style.height = (bh * scale) + 'px';
+  box.classList.toggle('handle-below', top < 21);
+  box.classList.toggle('handle-right', left + 56 > ph.clientWidth);
+  box.hidden = false;
 }
 
 /** 绑定拖拽：按住预览图里的水印框拖动，改写 pos_x / pos_y */
-function wmBindDrag(card, r, cfg) {
+function wmBindDrag(card, r, resizeObserver) {
   const ph = card.querySelector('.ph');
   const box = card.querySelector('.wm-free-box');
   const img = card.querySelector('img');
   if (!ph || !box || !img) return;
-  const bw = Number(box.dataset.bw), bh = Number(box.dataset.bh);
-  let dragging = false;
-  let startX = 0, startY = 0, startPx = 0, startPy = 0;
-
-  // 图片加载完才知道实际渲染尺寸
+  let position = { x: r.block.x, y: r.block.y };
   const place = () => {
-    const px = (Number(cfg.pos_x) || 0) / 100 * r.width;
-    const py = (Number(cfg.pos_y) || 0) / 100 * r.height;
-    wmPlaceBox(box, img, ph, r, px, py);
+    if (img.naturalWidth) wmPlaceBox(box, img, ph, r, position.x, position.y);
   };
-  if (img.complete && img.naturalWidth) place();
-  else img.addEventListener('load', place);
-  // 预览是懒加载的，尺寸可能还会变；窗口缩放时也要重新定位
-  const onResize = () => place();
-  window.addEventListener('resize', onResize);
-  card.addEventListener('DOMNodeRemoved', () => window.removeEventListener('resize', onResize));
+  img.addEventListener('load', place);
+  resizeObserver.observe(img);
+  resizeObserver.observe(ph);
+  card.placeWatermarkBox = place;
+  place();
 
   /** 鼠标位置换算成图片像素坐标 */
   const toImage = ev => {
@@ -2556,45 +2564,38 @@ function wmBindDrag(card, r, cfg) {
     return { x: (ev.clientX - rect.left) * scale, y: (ev.clientY - rect.top) * scale };
   };
 
-  ph.addEventListener('pointerdown', ev => {
-    if (dragging) return;
+  box.addEventListener('pointerdown', ev => {
+    if (WM.dragging || ev.button !== 0) return;
     const p = toImage(ev);
     if (!p) return;
-    // 只有按在水印框附近才开始拖动，避免误触
-    const bx = Math.min(Math.max(0, (Number(cfg.pos_x) || 0) / 100 * r.width), Math.max(0, r.width - bw));
-    const by = Math.min(Math.max(0, (Number(cfg.pos_y) || 0) / 100 * r.height), Math.max(0, r.height - bh));
-    const inside = p.x >= bx - 14 && p.x <= bx + bw + 14 && p.y >= by - 14 && p.y <= by + bh + 14;
-    if (!inside) return;
-    dragging = true;
-    startX = p.x; startY = p.y;
-    startPx = Number(cfg.pos_x) || 0; startPy = Number(cfg.pos_y) || 0;
-    try { ph.setPointerCapture(ev.pointerId); } catch (e) { }
+    box.setPointerCapture(ev.pointerId);
+    WM.dragging = { box, id: ev.pointerId, start: p, origin: position };
+    clearTimeout(WM.timer);
     ev.preventDefault();
   });
 
-  ph.addEventListener('pointermove', ev => {
-    if (!dragging) return;
+  box.addEventListener('pointermove', ev => {
+    const drag = WM.dragging;
+    if (drag?.box !== box || drag.id !== ev.pointerId) return;
     const p = toImage(ev);
     if (!p) return;
-    const dx = p.x - startX, dy = p.y - startY;
-    const nx = Math.min(100, Math.max(0, startPx + dx / r.width * 100));
-    const ny = Math.min(100, Math.max(0, startPy + dy / r.height * 100));
-    // 写回全局配置，重新渲染时才能带上新位置
-    wmCfg().pos_x = nx; wmCfg().pos_y = ny;
-    cfg.pos_x = nx; cfg.pos_y = ny;
-    // 拖动时先就地更新框，避免每动一下就重渲染
-    wmPlaceBox(box, img, ph, r, nx / 100 * r.width, ny / 100 * r.height);
+    position = {
+      x: Math.min(Math.max(0, r.width - r.block.w), Math.max(0, drag.origin.x + p.x - drag.start.x)),
+      y: Math.min(Math.max(0, r.height - r.block.h), Math.max(0, drag.origin.y + p.y - drag.start.y)),
+    };
+    wmCfg().pos_x = position.x / r.width * 100;
+    wmCfg().pos_y = position.y / r.height * 100;
+    place();
   });
 
   const end = ev => {
-    if (!dragging) return;
-    dragging = false;
-    try { ph.releasePointerCapture(ev.pointerId); } catch (e) { }
-    // 松手后用新位置重新渲染，拿到真实的水印外观
+    if (WM.dragging?.box !== box || WM.dragging.id !== ev.pointerId) return;
+    WM.dragging = null;
     wmSchedulePreview();
   };
-  ph.addEventListener('pointerup', end);
-  ph.addEventListener('pointercancel', end);
+  box.addEventListener('pointerup', end);
+  box.addEventListener('pointercancel', end);
+  box.addEventListener('lostpointercapture', end);
 }
 
 function wmRenderSampleChips() {
@@ -2613,8 +2614,8 @@ function wmSchedulePreview() {
 }
 
 async function wmRefreshPreviews() {
+  if (WM.dragging) return;
   const box = $('#wm-previews');
-  box.classList.toggle('free', (wmCfg().position || '') === 'free');
   if (!WM.samples.length) {
     box.innerHTML = '<div class="wm-empty">'+esc(wmScope().label)+'。当前范围没有可预览的照片。</div>';
     return;
@@ -2630,6 +2631,12 @@ async function wmRefreshPreviews() {
       <div class="meta"><span>${esc(s.tag)}</span><span>${s.item.width}×${s.item.height}</span></div>
     </div>`).join('');
   const cards = Array.from(box.children);
+  WM.resizeObserver?.disconnect();
+  const resizeObserver = new ResizeObserver(entries => {
+    const resizedCards = new Set(entries.map(entry => entry.target.closest('.wm-card')));
+    for (const card of resizedCards) card?.placeWatermarkBox?.();
+  });
+  WM.resizeObserver = resizeObserver;
   await Promise.all(WM.samples.map(async (s, i) => {
     try {
       const r = await api('/api/watermark/preview', {
@@ -2641,7 +2648,7 @@ async function wmRefreshPreviews() {
       if (!card) return;
       const isFree = (cfg.position || '') === 'free';
       card.innerHTML = `
-        <div class="ph"><img src="${r.image}" alt="水印效果，点击全屏查看" class="wm-preview-open" ${!isFree ? `data-wm-full="${esc(s.item.id)}"` : ''}>${isFree && r.block ? wmFreeBox(r) : ''}</div>
+        <div class="ph"><img src="${r.image}" alt="水印预览" draggable="false" ${isFree ? '' : `class="wm-preview-open" data-wm-full="${esc(s.item.id)}"`}>${isFree && r.block ? '<div class="wm-free-box" hidden><span class="wm-drag-handle">拖动我</span></div>' : ''}</div>
         <div class="meta">
           <button class="btn sm" data-wm-full="${esc(s.item.id)}">全屏查看水印效果</button>
           <span>${esc(s.tag)} ${esc(r.file_name || '')}</span><span><b>${r.width}×${r.height}</b></span>
@@ -2654,7 +2661,7 @@ async function wmRefreshPreviews() {
           ${r.warning ? `<span class="warn-line">${esc(r.warning)}</span>` : ''}
           ${r.detection?.suspected ? `<span class="wm-detection">本地检测特征分 ${r.detection.score}/100 <button class="btn sm" data-confirm-watermark="${esc(s.item.id)}">确认为已有水印</button></span>` : ''}
         </div>`;
-      if (isFree && r.block) wmBindDrag(card, r, cfg);
+      if (isFree && r.block) wmBindDrag(card, r, resizeObserver);
     } catch (e) {
       if (gen !== WM.gen) return;
       const card = cards[i];

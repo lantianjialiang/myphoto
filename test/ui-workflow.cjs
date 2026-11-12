@@ -13,7 +13,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));let checks=0;function check(nam
   let m;for(let i=0;i<300;i++){m=log.match(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=([\w-]+)/);if(m)break;await delay(50);}assert(m,log);
   const base='http://127.0.0.1:'+m[1],headers={'X-PVM-Token':m[2],'Content-Type':'application/json'};
   async function api(p,b){const r=await fetch(base+p,{headers,method:b===undefined?'GET':'POST',body:b===undefined?undefined:JSON.stringify(b)});const j=await r.json();assert(j.ok,JSON.stringify(j));return j.result;}
-  async function job(p,b){const r=await api(p,b);for(let i=0;i<300;i++){const j=await api('/api/jobs/'+r.job_id);if(!['running','queued','cancelling'].includes(j.status)){assert.equal(j.status,'completed',JSON.stringify(j));return;}await delay(50);}throw Error('timeout');}
+  async function job(p,b){const r=await api(p,b);for(let i=0;i<300;i++){const j=await api('/api/jobs/'+r.job_id);if(!['running','queued','cancelling'].includes(j.status)){assert.equal(j.status,'completed',JSON.stringify(j));return r.job_id;}await delay(50);}throw Error('timeout');}
   const source=await api('/api/sources',{path:photos});await job('/api/sources/'+source.id+'/scan',{});await job('/api/hash',{all:true});
   let items=(await api('/api/media?limit=100')).items;
   const large=items.find(p=>p.file_name==='large.png'),dupe=items.find(p=>p.file_name.startsWith('copy'));
@@ -107,6 +107,26 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));let checks=0;function check(nam
   await until("!$('#photo-viewer').hidden && $('#viewer-title').textContent.includes('3200×1800') && $('#viewer-canvas img').naturalWidth===3200");
   check('watermark fullscreen rerenders original resolution and exposes 100% inspection',()=>{});
   const screenshot=await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(root,'watermark-fullscreen.png'),Buffer.from(screenshot.data,'base64'));
+  await evaluate("closeViewer();Object.assign(wmCfg(),{position:'free',pos_x:100,pos_y:50});wmWriteUI();wmRefreshPreviews()");
+  await until("!WM.loading && $('.wm-free-box:not([hidden])')");
+  const handle = await evaluate(`(() => {
+    const label = $('.wm-drag-handle');
+    label.scrollIntoView({block:'center'});
+    const rect = label.getBoundingClientRect();
+    const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+    return {x,y,gen:WM.gen,hit:document.elementFromPoint(x,y) === label};
+  })()`);
+  assert.equal(handle.hit,true,JSON.stringify(handle));
+  await cdp('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,x:handle.x,y:handle.y});
+  await until("WM.dragging !== null");
+  await evaluate("wmSchedulePreview()");
+  await delay(350);
+  assert.equal(await evaluate("WM.gen"),handle.gen);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',button:'left',buttons:1,x:handle.x-55,y:handle.y+20});
+  assert.equal(await evaluate("wmCfg().pos_x < 90"),true);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,x:handle.x-55,y:handle.y+20});
+  await until(`!WM.dragging && !WM.loading && WM.gen>${handle.gen}`);
+  check('watermark handle can be dragged from a clamped edge and refresh waits for release',()=>{});
   await evaluate(`closeViewer();closeDetail();switchView('library');S.sel=new Set([${JSON.stringify(large.id)},${JSON.stringify(dupe.id)}]);updateSelBar()`);
   await delay(250);
   const library=await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(root,'library-toolbar.png'),Buffer.from(library.data,'base64'));
@@ -114,6 +134,21 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));let checks=0;function check(nam
   await cdp('Emulation.setDeviceMetricsOverride',{width:1100,height:900,deviceScaleFactor:1,mobile:false});await delay(200);
   assert.equal(await evaluate("document.querySelector('.topbar').getBoundingClientRect().height<110 && $('#selbar').getBoundingClientRect().height<110"),true);
   check('compact toolbar fits normal and smaller desktop widths',()=>{});
+  await cdp('Emulation.setDeviceMetricsOverride',{width:930,height:730,deviceScaleFactor:1,mobile:false});
+  await evaluate(`switchView('timeline');openDetail(${JSON.stringify(large.id)})`);
+  await until("$('#d-img')?.naturalWidth && $('.detail-tabs')");
+  assert.equal(await evaluate(`(() => {
+    const preview = $('#d-preview').getBoundingClientRect();
+    const image = $('#d-img').getBoundingClientRect();
+    const tabs = $('.detail-tabs').getBoundingClientRect();
+    const header = $('#view-timeline .vhead').getBoundingClientRect();
+    return image.bottom <= preview.bottom && preview.bottom <= tabs.top &&
+      $$('#tl-density button').every(button => {
+        const rect = button.getBoundingClientRect();
+        return rect.right <= header.right && rect.height < 32;
+      });
+  })()`),true);
+  check('timeline controls and photo tabs remain separate in a narrow window',()=>{});
   fs.writeFileSync(path.join(photos,'similar_variant.jpg'),Buffer.concat([fs.readFileSync(path.join(__dirname,'fixtures/gps.jpg')),Buffer.from('similar test variant')]));
   await job('/api/sources/'+source.id+'/scan',{});await job('/api/hash',{all:true});await job('/api/similar/hash',{});
   const variant=(await api('/api/media?limit=100')).items.find(a=>a.file_name==='similar_variant.jpg');assert(variant);
@@ -124,6 +159,21 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));let checks=0;function check(nam
   await evaluate("$('#delete-confirm').click()");await until(`!deletingPhotos && !document.querySelector('[data-sim-delete="${variant.id}"]')`);
   assert.equal(fs.existsSync(path.join(photos,'similar_variant.jpg')),false);assert(fs.existsSync(dupeDetails.files[0].absolute_path));
   check('similar-photo group deletion recycles only checked photos and refreshes results',()=>{});
+  const watermarkJob = await job('/api/watermark/run',{ids:[large.id],config:{text:'TASK HISTORY',require_date:false}});
+  const outputIds = await api('/api/media/ids?job_id='+watermarkJob);
+  assert.equal(outputIds.length,1);
+  const outputPath = (await api('/api/media/'+outputIds[0])).files[0].absolute_path;
+  await evaluate("switchView('jobs')");
+  const deleteJobButton = `document.querySelector('[data-delete-job="${watermarkJob}"]')`;
+  await until(deleteJobButton);
+  await evaluate(deleteJobButton+'.click();$("#cf-no").click()');
+  assert((await api('/api/jobs')).some(job=>job.id===watermarkJob));
+  await evaluate(deleteJobButton+'.click();$("#cf-yes").click()');
+  await until('!'+deleteJobButton);
+  assert(!(await api('/api/jobs')).some(job=>job.id===watermarkJob));
+  assert.deepEqual(await api('/api/media/ids?job_id='+watermarkJob),outputIds);
+  assert(fs.existsSync(outputPath));
+  check('deleting a task record preserves its generated file and library association',()=>{});
   check('no unhandled browser errors during tested interactions',()=>assert.deepEqual(errors,[]));
   console.log(`PASS ${checks} browser checks; screenshot: ${root}/watermark-fullscreen.png`);
 }finally{if(ws)ws.close();browser?.kill();child.kill();}})().catch(e=>{console.error(e);console.error('Artifacts:',root);process.exitCode=1;});

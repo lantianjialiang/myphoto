@@ -386,6 +386,7 @@ fn route(
         ["api", "archive", "plans", id, "undo"] if m == "POST" => Some(api_undo_plan(app, id)),
         ["api", "jobs"] => Some(api_jobs(app)),
         ["api", "jobs", id, "cancel"] if m == "POST" => Some(api_job_cancel(app, id)),
+        ["api", "jobs", id] if m == "DELETE" => Some(api_job_delete(app, id)),
         ["api", "jobs", id] => Some(api_job_get(app, id)),
         ["api", "logs"] => Some(api_logs(app, params)),
         ["api", "settings"] if m == "GET" => Some(api_settings_get(app)),
@@ -1707,6 +1708,30 @@ fn api_job_cancel(app: &Shared, id: &str) -> Response<Body> {
         ok(json!(true))
     } else {
         json_err(404, "任务不在运行中")
+    }
+}
+
+fn api_job_delete(app: &Shared, id: &str) -> Response<Body> {
+    let Ok(conn) = open_db(app) else { return json_err(500, "数据库不可用") };
+    match conn.execute(
+        "DELETE FROM jobs WHERE id=?1
+         AND status IN ('completed','partial','failed','cancelled','interrupted')",
+        params![id],
+    ) {
+        Ok(1) => {
+            app.jobs.cleanup();
+            ok(json!(true))
+        }
+        Ok(_) => match conn.query_row(
+            "SELECT status FROM jobs WHERE id=?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        ).optional() {
+            Ok(Some(_)) => json_err(409, "任务尚未结束，暂不能删除"),
+            Ok(None) => json_err(404, "任务不存在"),
+            Err(e) => json_err(500, &e.to_string()),
+        },
+        Err(e) => json_err(500, &e.to_string()),
     }
 }
 

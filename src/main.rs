@@ -118,7 +118,7 @@ fn launch_window(url: &str, profile: &Path) -> Option<std::process::Child> {
     let _ = std::fs::create_dir_all(profile);
     std::process::Command::new(browser)
         .arg(format!("--app={url}"))
-        .arg("--window-size=1560,960")
+        .arg("--start-fullscreen")
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg(format!("--user-data-dir={}", profile.display()))
