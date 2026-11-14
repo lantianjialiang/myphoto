@@ -174,6 +174,17 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));let checks=0;function check(nam
   assert.deepEqual(await api('/api/media/ids?job_id='+watermarkJob),outputIds);
   assert(fs.existsSync(outputPath));
   check('deleting a task record preserves its generated file and library association',()=>{});
+  await evaluate("switchView('sources')");
+  const addedFolder = path.join(root,'AnotherSource');
+  fs.mkdirSync(addedFolder);
+  fs.writeFileSync(path.join(addedFolder,'newly_added.jpg'),Buffer.concat([
+    fs.readFileSync(path.join(__dirname,'fixtures/gps.jpg')),Buffer.from('new source fixture'),
+  ]));
+  const addedSource = await api('/api/sources',{path:addedFolder});
+  await job('/api/sources/'+addedSource.id+'/scan',{});
+  await evaluate("switchView('library')");
+  assert(await evaluate("Array.from(G.items.values()).some(item => item.file_name === 'newly_added.jpg')"));
+  check('returning to the library shows photos scanned while another page was open',()=>{});
   check('no unhandled browser errors during tested interactions',()=>assert.deepEqual(errors,[]));
   console.log(`PASS ${checks} browser checks; screenshot: ${root}/watermark-fullscreen.png`);
 }finally{if(ws)ws.close();browser?.kill();child.kill();}})().catch(e=>{console.error(e);console.error('Artifacts:',root);process.exitCode=1;});

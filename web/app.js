@@ -151,7 +151,7 @@ const G = {
 /* ============================ 导航 ============================ */
 const VIEW_TITLES = { library: '媒体库', timeline: '时间线', review: '待整理', dupes: '重复文件', similar: '相似照片', watermark: '时间水印', edit: '图像编辑', jobs: '任务中心', sources: '媒体源', settings: '设置' };
 
-function switchView(v) {
+function switchView(v, resetLibrary = false) {
   if (v === 'edit') { openLibraryEditor(); return; }
   if (v !== S.view) { closeDetail(); if (!$('#photo-viewer').hidden) closeViewer(); }
   S.view = v;
@@ -162,7 +162,10 @@ function switchView(v) {
   $('.topbar').hidden = v !== 'library';
   $('#status-text').textContent = VIEW_TITLES[v] || '';
   updateSelBar();
-  if (v === 'library') layout();
+  if (v === 'library') {
+    layout();
+    return loadMedia(resetLibrary);
+  }
   if (v === 'timeline') loadTimeline(true);
   if (v === 'review') loadReview();
   if (v === 'dupes') loadDupes();
@@ -284,12 +287,13 @@ async function loadMedia(reset) {
   S.mediaRevision = Date.now();
   S.gen++;
   const gen = S.gen;
-  G.items.clear(); G.pages.clear();
-  G.nodes.forEach(n => n.remove()); G.nodes.clear();
-  if (reset) scrollEl().scrollTop = 0;
+  S.mediaLoading = true;
   try {
     const r = await apiGet('/api/media', filterParams({ offset: 0, limit: G.pageSize }));
     if (gen !== S.gen) return;
+    G.items.clear(); G.pages.clear();
+    G.nodes.forEach(n => n.remove()); G.nodes.clear();
+    if (reset) scrollEl().scrollTop = 0;
     G.total = r.total;
     S.filter.total = r.total;
     const active=Object.keys(S.filter).filter(k=>k!=='total' && S.filter[k]!==undefined && S.filter[k]!==false && S.filter[k]!=='').length;
@@ -302,9 +306,18 @@ async function loadMedia(reset) {
     $('#lib-empty p').textContent = hasLibrary ? '试试清除筛选条件，或添加其他媒体源。' : '先添加照片文件夹并扫描建立索引，扫描不会修改原文件。';
     $('#lib-hint').hidden = G.total === 0;
     if (G.total > 0) $('#lib-hint').textContent = `共 ${G.total} 项 · 按${S.sort === 'taken' ? '拍摄时间' : '当前排序'}展示 · 单击打开详情，Ctrl+单击多选`;
+    S.mediaLoading = false;
     layout();
     updateSelBar();
-  } catch (e) { toast(e.message, 'err'); }
+  } catch (e) {
+    if (gen !== S.gen) return;
+    for (const [page, status] of G.pages) {
+      if (status === 'loading') G.pages.delete(page);
+    }
+    toast(e.message, 'err');
+  } finally {
+    if (gen === S.gen) S.mediaLoading = false;
+  }
 }
 
 async function fetchPage(p) {
@@ -318,12 +331,14 @@ async function fetchPage(p) {
     G.pages.set(p, 'done');
     renderWindow();
   } catch (e) {
+    if (gen !== S.gen) return;
     G.pages.delete(p);
     toast(e.message, 'err');
   }
 }
 
 function ensureLoaded(start, end) {
+  if (S.mediaLoading || start >= end) return;
   const firstPage = Math.max(0, Math.floor(start / G.pageSize));
   const lastPage = Math.max(0, Math.floor((end - 1) / G.pageSize));
   for (let p = firstPage; p <= lastPage; p++) fetchPage(p);
@@ -1115,8 +1130,11 @@ const JOB_STATUS = {
 };
 
 async function loadJobs() {
+  const request = S.jobsRequest = (S.jobsRequest || 0) + 1;
   try {
-    S.jobs = await apiGet('/api/jobs');
+    const jobs = await apiGet('/api/jobs');
+    if (request !== S.jobsRequest) return;
+    S.jobs = jobs;
     if (S.view === 'jobs') {
       if (S.jobsTab === 'logs') renderLogs();
       else if (S.jobsTab === 'undo') renderUndo();
@@ -1229,7 +1247,7 @@ $('#jobs-list').addEventListener('click', async ev => {
       S.filter = { job_id: t.dataset.results }; S.sel = new Set(ids);
       $('#q').value = ''; $$('.filters select').forEach(el => el.value = '');
       $$('.filters .chip').forEach(el => el.classList.remove('on'));
-      switchView('library'); await loadMedia(true);
+      await switchView('library', true);
       toast('已选中生成副本，可直接点击“网页相册…”');
     } catch (e) { toast(e.message, 'err'); }
     return;
@@ -1316,11 +1334,17 @@ async function loadSourcesView() {
   </div>`).join('');
 }
 
+async function scanSource(id) {
+  const job = await api('/api/sources/' + id + '/scan', { method: 'POST' });
+  S.jobsRequest = (S.jobsRequest || 0) + 1;
+  S.running.add(job.job_id);
+}
+
 $('#src-list').addEventListener('click', async ev => {
   const t = ev.target;
   if (t.dataset.scan) {
     try {
-      await api('/api/sources/' + t.dataset.scan + '/scan', { method: 'POST' });
+      await scanSource(t.dataset.scan);
       toast('已开始扫描，进度见任务中心', 'ok');
       switchView('jobs');
     } catch (e) { toast(e.message, 'err'); }
@@ -1358,15 +1382,12 @@ $('#btn-add-source').addEventListener('click', async () => {
   const path = await pickFolder();
   if (!path) return;
   try {
-    await api('/api/sources', { method: 'POST', body: { path } });
+    const source = await api('/api/sources', { method: 'POST', body: { path } });
     toast('已添加媒体源', 'ok');
     await loadSourcesView();
-    const src = S.sources.find(s => s.root_path.toLowerCase() === path.toLowerCase());
-    if (src) {
-      await api('/api/sources/' + src.id + '/scan', { method: 'POST' });
-      toast('开始扫描…', 'ok');
-      switchView('jobs');
-    }
+    await scanSource(source.id);
+    toast('开始扫描…', 'ok');
+    switchView('jobs');
     loadState();
   } catch (e) { toast(e.message, 'err'); }
 });
@@ -1375,7 +1396,7 @@ $('#btn-scan-all').addEventListener('click', async () => {
   const online = S.sources.filter(s => s.online);
   if (!online.length) return toast('没有在线的媒体源', 'err');
   for (const s of online) {
-    try { await api('/api/sources/' + s.id + '/scan', { method: 'POST' }); }
+    try { await scanSource(s.id); }
     catch (e) { toast(e.message, 'err'); }
   }
   toast(`已开始扫描 ${online.length} 个源`, 'ok');
@@ -2057,8 +2078,7 @@ document.addEventListener('keydown', e => {
   await loadCaps();
   await loadSources();
   await loadFacets();
-  await loadMedia(true);
-  switchView('library');
+  await switchView('library', true);
   const simInit = (S.settings && S.settings.similar_threshold) || '6';
   $('#sim-threshold').value = simInit;
   $('#sim-threshold-val').textContent = simInit;

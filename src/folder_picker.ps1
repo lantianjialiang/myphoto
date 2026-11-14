@@ -4,10 +4,21 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -ReferencedAssemblies 'System.Windows.Forms.dll' -TypeDefinition @'
 using System;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 public sealed class PickerWindow : IWin32Window {
     public IntPtr Handle { get; private set; }
     public PickerWindow(long handle) { Handle = new IntPtr(handle); }
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr window);
+
+    public bool IsValid { get { return IsWindow(Handle); } }
+    public void Activate() {
+        if (IsValid) SetForegroundWindow(Handle);
+    }
 }
 '@
 $isFile = $env:PVM_PICKER_KIND -eq 'file' -or $env:PVM_PICKER_KIND -eq 'font'
@@ -19,6 +30,7 @@ if ($isFile) {
     $dialog.Filter = if ($env:PVM_PICKER_KIND -eq 'font') { '字体文件 (*.ttf;*.ttc;*.otf)|*.ttf;*.ttc;*.otf|所有文件 (*.*)|*.*' } else { '所有文件 (*.*)|*.*' }
 } else { $dialog = New-Object System.Windows.Forms.FolderBrowserDialog }
 $owner = New-Object System.Windows.Forms.Form
+$parent = $null
 try {
     if (!$isFile) { $dialog.Description = '选择文件夹'; $dialog.ShowNewFolderButton = $true }
     if ($isFile -and $env:PVM_PICKER_INITIAL) {
@@ -37,6 +49,8 @@ try {
     $handleValue = 0L
     if ([long]::TryParse($env:PVM_PICKER_OWNER, [ref]$handleValue) -and $handleValue -ne 0) {
         $parent = New-Object PickerWindow($handleValue)
+    }
+    if ($parent -and $parent.IsValid) {
         $owner.Show($parent)
     } else {
         $owner.Show()
@@ -47,6 +61,8 @@ try {
     }
 } finally {
     $dialog.Dispose()
+    # Transfer focus while the picker still has foreground activation rights.
+    if ($parent) { $parent.Activate() }
     $owner.Close()
     $owner.Dispose()
 }
